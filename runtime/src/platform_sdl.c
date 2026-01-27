@@ -476,9 +476,43 @@ void gb_platform_set_title(const char* title) {
     }
 }
 
+/* ============================================================================
+ * Save Data
+ * ========================================================================== */
+
+static bool sdl_load_battery_ram(GBContext* ctx, const char* rom_name, void* data, size_t size) {
+    (void)ctx;
+    char filename[256];
+    snprintf(filename, sizeof(filename), "%s.sav", rom_name);
+    
+    FILE* f = fopen(filename, "rb");
+    if (!f) return false;
+    
+    size_t read = fread(data, 1, size, f);
+    fclose(f);
+    
+    return read == size;
+}
+
+static bool sdl_save_battery_ram(GBContext* ctx, const char* rom_name, const void* data, size_t size) {
+    (void)ctx;
+    char filename[256];
+    snprintf(filename, sizeof(filename), "%s.sav", rom_name);
+    
+    FILE* f = fopen(filename, "wb");
+    if (!f) return false;
+    
+    size_t written = fwrite(data, 1, size, f);
+    fclose(f);
+    
+    return written == size;
+}
+
 void gb_platform_register_context(GBContext* ctx) {
     GBPlatformCallbacks callbacks = {
-        .on_audio_sample = on_audio_sample
+        .on_audio_sample = on_audio_sample,
+        .load_battery_ram = sdl_load_battery_ram,
+        .save_battery_ram = sdl_save_battery_ram
     };
     gb_set_platform_callbacks(ctx, &callbacks);
 }

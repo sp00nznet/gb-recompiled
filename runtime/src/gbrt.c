@@ -70,12 +70,21 @@ GBContext* gb_context_create(const GBConfig* config) {
 
 void gb_context_destroy(GBContext* ctx) {
     if (!ctx) return;
+    
+    /* Save RAM before destroying if available */
+    if (ctx->eram && ctx->ram_enabled && ctx->callbacks.save_battery_ram) {
+        gb_context_save_ram(ctx);
+    }
+    
     if (ctx->trace_file) fclose((FILE*)ctx->trace_file);
     free(ctx->wram);
     free(ctx->vram);
     free(ctx->oam);
     free(ctx->hram);
     free(ctx->io);
+    
+    if (ctx->eram) free(ctx->eram);
+    
     if (ctx->ppu) free(ctx->ppu);
     if (ctx->apu) gb_audio_destroy(ctx->apu);
     if (ctx->rom) free(ctx->rom);
@@ -171,7 +180,104 @@ bool gb_context_load_rom(GBContext* ctx, const uint8_t* data, size_t size) {
     if (!ctx->rom) return false;
     memcpy(ctx->rom, data, size);
     ctx->rom_size = size;
+    
+    /* Parse Header for RAM/Battery info */
+    if (size > 0x149) {
+        uint8_t type = ctx->rom[0x147];
+        uint8_t ram_size_code = ctx->rom[0x149];
+        
+        /* Check if battery is present */
+        bool has_battery = false;
+        switch (type) {
+            case 0x03: /* MBC1+RAM+BATTERY */
+            case 0x06: /* MBC2+BATTERY */
+            case 0x09: /* ROM+RAM+BATTERY */
+            case 0x0D: /* MMM01+RAM+BATTERY */
+            case 0x0F: /* MBC3+TIMER+BATTERY */
+            case 0x10: /* MBC3+TIMER+RAM+BATTERY */
+            case 0x13: /* MBC3+RAM+BATTERY */
+            case 0x1B: /* MBC5+RAM+BATTERY */
+            case 0x1E: /* MBC5+RUMBLE+RAM+BATTERY */
+            case 0x22: /* MBC7+SENSOR+RUMBLE+RAM+BATTERY */
+            case 0xFF: /* HuC1+RAM+BATTERY */
+                has_battery = true;
+                break;
+        }
+        
+        /* Calculate RAM size */
+        size_t ram_bytes = 0;
+        
+        /* MBC2 has fixed 512x4 bits (256 bytes effective, usually 512 allocated) */
+        if (type == 0x05 || type == 0x06) {
+            ram_bytes = 512;
+            ram_size_code = 0; /* Override */
+        } else {
+            switch (ram_size_code) {
+                case 0x00: ram_bytes = 0; break;
+                case 0x01: ram_bytes = 2 * 1024; break; /* 2KB */
+                case 0x02: ram_bytes = 8 * 1024; break; /* 8KB */
+                case 0x03: ram_bytes = 32 * 1024; break; /* 32KB (4 banks) */
+                case 0x04: ram_bytes = 128 * 1024; break; /* 128KB (16 banks) */
+                case 0x05: ram_bytes = 64 * 1024; break; /* 64KB (8 banks) */
+                default: ram_bytes = 0; break;
+            }
+        }
+        
+        /* Allocate RAM */
+        if (ctx->eram) free(ctx->eram);
+        ctx->eram = NULL;
+        ctx->eram_size = 0;
+        
+        if (ram_bytes > 0) {
+            ctx->eram = (uint8_t*)calloc(1, ram_bytes);
+            if (ctx->eram) {
+                ctx->eram_size = ram_bytes;
+                printf("[GBRT] Allocated %zu bytes for External RAM\n", ram_bytes);
+                
+                /* Load Save Data if Battery Present */
+                if (has_battery && ctx->callbacks.load_battery_ram) {
+                    /* Get ROM title for filename */
+                    char title[17] = {0};
+                    memcpy(title, &ctx->rom[0x134], 16);
+                    /* Sanitize title */
+                    for(int i=0; i<16; i++) {
+                        if(title[i] == 0 || title[i] < 32 || title[i] > 126) title[i] = 0;
+                    }
+                    if(title[0] == 0) strcpy(title, "UNKNOWN_GAME");
+                    
+                    if (ctx->callbacks.load_battery_ram(ctx, title, ctx->eram, ctx->eram_size)) {
+                         printf("[GBRT] Loaded battery RAM for '%s'\n", title);
+                    }
+                }
+            }
+        }
+    }
+    
     return true;
+}
+
+bool gb_context_save_ram(GBContext* ctx) {
+    if (!ctx || !ctx->eram || !ctx->eram_size || !ctx->callbacks.save_battery_ram) {
+        return false;
+    }
+    
+    /* Get ROM title for filename */
+    char title[17] = {0};
+    if (ctx->rom_size > 0x143) {
+        memcpy(title, &ctx->rom[0x134], 16);
+        for(int i=0; i<16; i++) {
+            if(title[i] == 0 || title[i] < 32 || title[i] > 126) title[i] = 0;
+        }
+    }
+    if(title[0] == 0) strcpy(title, "UNKNOWN_GAME");
+    
+    bool result = ctx->callbacks.save_battery_ram(ctx, title, ctx->eram, ctx->eram_size);
+    if (result) {
+        printf("[GBRT] Saved battery RAM for '%s'\n", title);
+    } else {
+        printf("[GBRT] Failed to save battery RAM for '%s'\n", title);
+    }
+    return result;
 }
 
 /* ============================================================================

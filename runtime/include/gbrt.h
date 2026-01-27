@@ -67,6 +67,10 @@ typedef struct {
     void (*on_audio_sample)(GBContext* ctx, int16_t left, int16_t right);
     uint8_t (*get_joypad)(GBContext* ctx);
     void (*on_serial_byte)(GBContext* ctx, uint8_t byte);
+    
+    /* Save Data / External RAM */
+    bool (*load_battery_ram)(GBContext* ctx, const char* rom_name, void* data, size_t size);
+    bool (*save_battery_ram)(GBContext* ctx, const char* rom_name, const void* data, size_t size);
 } GBPlatformCallbacks;
 
 /**
@@ -211,6 +215,13 @@ void gb_context_reset(GBContext* ctx, bool skip_bootrom);
  * @return true on success
  */
 bool gb_context_load_rom(GBContext* ctx, const uint8_t* data, size_t size);
+
+/**
+ * @brief Save battery-backed RAM to persistent storage
+ * @param ctx Target context
+ * @return true on success
+ */
+bool gb_context_save_ram(GBContext* ctx);
 
 /* ============================================================================
  * Memory Access
