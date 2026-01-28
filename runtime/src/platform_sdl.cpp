@@ -1,6 +1,6 @@
 /**
- * @file platform_sdl.c
- * @brief SDL2 platform implementation for GameBoy runtime
+ * @file platform_sdl.cpp
+ * @brief SDL2 platform implementation for GameBoy runtime with ImGui
  */
 
 #include "platform_sdl.h"
@@ -10,6 +10,9 @@
 
 #ifdef GB_HAS_SDL2
 #include <SDL.h>
+#include "imgui.h"
+#include "backends/imgui_impl_sdl2.h"
+#include "backends/imgui_impl_sdlrenderer2.h"
 
 /* ============================================================================
  * SDL State
@@ -21,8 +24,20 @@ static SDL_Texture* g_texture = NULL;
 static int g_scale = 3;
 static uint32_t g_last_frame_time = 0;
 static SDL_AudioDeviceID g_audio_device = 0;
+static bool g_vsync = true;
 
-/* Joypad state - exported for gbrt.c to access */
+/* Menu State */
+static bool g_show_menu = false;
+static int g_speed_percent = 100;
+static int g_palette_idx = 0;
+static const char* g_palette_names[] = { "Original (Green)", "Black & White (Pocket)", "Amber (Plasma)" };
+static const char* g_scale_names[] = { "1x (160x144)", "2x (320x288)", "3x (480x432)", "4x (640x576)", "5x (800x720)", "6x (960x864)", "7x (1120x1008)", "8x (1280x1152)" };
+static const uint32_t g_palettes[][4] = {
+    { 0xFFE0F8D0, 0xFF88C070, 0xFF346856, 0xFF081820 }, // Original
+    { 0xFFFFFFFF, 0xFFAAAAAA, 0xFF555555, 0xFF000000 }, // B&W
+    { 0xFFFFB000, 0xFFCB4F0E, 0xFF800000, 0xFF330000 }  // Amber
+};
+
 /* Joypad state - exported for gbrt.c to access */
 uint8_t g_joypad_buttons = 0xFF;  /* Active low: Start, Select, B, A */
 uint8_t g_joypad_dpad = 0xFF;     /* Active low: Down, Up, Left, Right */
@@ -44,7 +59,6 @@ typedef struct {
 
 static ScriptEntry g_input_script[MAX_SCRIPT_ENTRIES];
 static int g_script_count = 0;
-static int g_script_idx = 0;
 
 #define MAX_DUMP_FRAMES 100
 static uint32_t g_dump_frames[MAX_DUMP_FRAMES];
@@ -68,7 +82,6 @@ static void parse_buttons(const char* btn_str, uint8_t* dpad, uint8_t* buttons) 
 
 void gb_platform_set_input_script(const char* script) {
     // Format: frame:buttons:duration,...
-    // e.g. "60:S:10,120:A:5"
     if (!script) return;
     
     char* copy = strdup(script);
@@ -120,9 +133,7 @@ static void save_ppm(const char* filename, const uint32_t* fb, int width, int he
     
     fprintf(f, "P6\n%d %d\n255\n", width, height);
     
-    // Convert ARGB to RGB
-    int num_pixels = width * height;
-    uint8_t* row = malloc(width * 3);
+    uint8_t* row = (uint8_t*)malloc(width * 3);
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
             uint32_t p = fb[y * width + x];
@@ -146,6 +157,15 @@ static int g_frame_count = 0;
  * ========================================================================== */
 
 void gb_platform_shutdown(void) {
+    if (g_audio_device) {
+        SDL_CloseAudioDevice(g_audio_device);
+        g_audio_device = 0;
+    }
+    
+    ImGui_ImplSDLRenderer2_Shutdown();
+    ImGui_ImplSDL2_Shutdown();
+    ImGui::DestroyContext();
+
     if (g_texture) {
         SDL_DestroyTexture(g_texture);
         g_texture = NULL;
@@ -157,10 +177,6 @@ void gb_platform_shutdown(void) {
     if (g_window) {
         SDL_DestroyWindow(g_window);
         g_window = NULL;
-    }
-    if (g_audio_device) {
-        SDL_CloseAudioDevice(g_audio_device);
-        g_audio_device = 0;
     }
     SDL_Quit();
 }
@@ -270,7 +286,21 @@ bool gb_platform_init(int scale) {
     }
     
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
-    
+
+    // Setup Dear ImGui context
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO(); (void)io;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+
+    // Setup Dear ImGui style
+    ImGui::StyleColorsDark();
+
+    // Setup Platform/Renderer backends
+    ImGui_ImplSDL2_InitForSDLRenderer(g_window, g_renderer);
+    ImGui_ImplSDLRenderer2_Init(g_renderer);
+
     g_texture = SDL_CreateTexture(
         g_renderer,
         SDL_PIXELFORMAT_ARGB8888,
@@ -298,10 +328,12 @@ bool gb_platform_poll_events(GBContext* ctx) {
     bool buttons_selected = !(joyp & 0x20);
     
     while (SDL_PollEvent(&event)) {
+         ImGui_ImplSDL2_ProcessEvent(&event);
+         if (event.type == SDL_QUIT) return false;
+         if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE && event.window.windowID == SDL_GetWindowID(g_window))
+            return false;
+
         switch (event.type) {
-            case SDL_QUIT:
-                return false;
-                
             case SDL_KEYDOWN:
             case SDL_KEYUP: {
                 bool pressed = (event.type == SDL_KEYDOWN);
@@ -352,7 +384,10 @@ bool gb_platform_poll_events(GBContext* ctx) {
                         break;
                     
                     case SDL_SCANCODE_ESCAPE:
-                        return false;
+                        if (pressed) {
+                            g_show_menu = !g_show_menu;
+                        }
+                        return true; // Don't block
                         
                     default:
                         break;
@@ -368,7 +403,7 @@ bool gb_platform_poll_events(GBContext* ctx) {
             
             case SDL_WINDOWEVENT:
                 if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
-                    /* Handle resize */
+                    /* Handle resize if needed or just let SDL/ImGui handle it */
                 }
                 break;
         }
@@ -389,7 +424,6 @@ bool gb_platform_poll_events(GBContext* ctx) {
              
                 if (trigger && ctx) {
                     /* Only trigger on initial press, not repeats or continuous hold */
-                    /* But for automation, we just check frame range. We should only trigger on EDGE. */
                      if (g_frame_count == e->start_frame) {
                         ctx->io[0x0F] |= 0x10;
                         if (ctx->halted) ctx->halted = 0;
@@ -443,11 +477,90 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
     }
     
     /* Update texture */
-    SDL_UpdateTexture(g_texture, NULL, framebuffer, GB_SCREEN_WIDTH * sizeof(uint32_t));
+    void* pixels;
+    int pitch;
+    SDL_LockTexture(g_texture, NULL, &pixels, &pitch);
+    
+    const uint32_t* src = framebuffer;
+    uint32_t* dst = (uint32_t*)pixels;
+    
+    if (g_palette_idx == 0) {
+        memcpy(dst, src, GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT * sizeof(uint32_t));
+    } else {
+        uint32_t original_palette[4] = { 0xFFE0F8D0, 0xFF88C070, 0xFF346856, 0xFF081820 };
+        
+        for (int i = 0; i < GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT; i++) {
+            uint32_t c = src[i];
+            int color_idx = -1;
+            if (c == original_palette[0]) color_idx = 0;
+            else if (c == original_palette[1]) color_idx = 1;
+            else if (c == original_palette[2]) color_idx = 2;
+            else if (c == original_palette[3]) color_idx = 3;
+            
+            if (color_idx >= 0) {
+                dst[i] = g_palettes[g_palette_idx][color_idx];
+            } else {
+                dst[i] = c; 
+            }
+        }
+    }
+    
+    SDL_UnlockTexture(g_texture);
     
     /* Clear and render */
     SDL_RenderClear(g_renderer);
     SDL_RenderCopy(g_renderer, g_texture, NULL, NULL);
+
+    // ImGui Frame
+    ImGui_ImplSDLRenderer2_NewFrame();
+    ImGui_ImplSDL2_NewFrame();
+    ImGui::NewFrame();
+
+    if (g_show_menu) {
+        ImGui::Begin("GameBoy Recompiled", &g_show_menu);
+        ImGui::Text("Performance: %.1f FPS", ImGui::GetIO().Framerate);
+        int scale_idx = g_scale - 1;
+        if (ImGui::Combo("Resolution", &scale_idx, g_scale_names, IM_ARRAYSIZE(g_scale_names))) {
+            g_scale = scale_idx + 1;
+            SDL_SetWindowSize(g_window, GB_SCREEN_WIDTH * g_scale, GB_SCREEN_HEIGHT * g_scale);
+            SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        }
+
+        if (ImGui::Checkbox("V-Sync", &g_vsync)) {
+            SDL_RenderSetVSync(g_renderer, g_vsync ? 1 : 0);
+        }
+
+        ImGui::SliderInt("Speed %", &g_speed_percent, 10, 500);
+        if (ImGui::Button("Reset Speed")) g_speed_percent = 100;
+        ImGui::Combo("Palette", &g_palette_idx, g_palette_names, IM_ARRAYSIZE(g_palette_names));
+
+        if (ImGui::Button("Reset to Defaults")) {
+            g_scale = 3;
+            g_speed_percent = 100;
+            SDL_SetWindowSize(g_window, GB_SCREEN_WIDTH * g_scale, GB_SCREEN_HEIGHT * g_scale);
+            SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+            g_palette_idx = 0;
+        }
+
+        if (ImGui::Button("Quit")) {
+            SDL_Event quit_event;
+            quit_event.type = SDL_QUIT;
+            SDL_PushEvent(&quit_event);
+        }
+        ImGui::End();
+    } else {
+        ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(0.35f); 
+        if (ImGui::Begin("Overlay", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
+            ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+            ImGui::Text("Press ESC for Menu");
+            ImGui::End();
+        }
+    }
+
+    ImGui::Render();
+    ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData());
+
     SDL_RenderPresent(g_renderer);
 }
 
@@ -458,13 +571,15 @@ uint8_t gb_platform_get_joypad(void) {
 }
 
 void gb_platform_vsync(void) {
-    /* Target 59.7 FPS */
-    const uint32_t frame_time_ms = 16;  /* ~60 FPS */
+    /* Target 59.7 FPS * Speed Multiplier */
+    const uint32_t base_frame_time_ms = 16;
+    uint32_t scaled_frame_time = (base_frame_time_ms * 100) / (g_speed_percent > 0 ? g_speed_percent : 1);
+    
     uint32_t current_time = SDL_GetTicks();
     uint32_t elapsed = current_time - g_last_frame_time;
     
-    if (elapsed < frame_time_ms) {
-        SDL_Delay(frame_time_ms - elapsed);
+    if (elapsed < scaled_frame_time) {
+        SDL_Delay(scaled_frame_time - elapsed);
     }
     
     g_last_frame_time = SDL_GetTicks();

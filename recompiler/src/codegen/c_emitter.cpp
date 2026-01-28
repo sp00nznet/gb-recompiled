@@ -2000,7 +2000,7 @@ GeneratedOutput generate_output(const ir::Program& program,
     // Generate CMakeLists.txt
     std::ostringstream cmake_ss;
     cmake_ss << "cmake_minimum_required(VERSION 3.16)\n";
-    cmake_ss << "project(" << options.output_prefix << " C)\n\n";
+    cmake_ss << "project(" << options.output_prefix << " C CXX)\n\n";
     cmake_ss << "# Set C standard\n";
     cmake_ss << "set(CMAKE_C_STANDARD 11)\n";
     cmake_ss << "set(CMAKE_C_STANDARD_REQUIRED ON)\n\n";
@@ -2009,8 +2009,7 @@ GeneratedOutput generate_output(const ir::Program& program,
     cmake_ss << "    set(CMAKE_BUILD_TYPE Release)\n";
     cmake_ss << "endif()\n";
     cmake_ss << "if(CMAKE_C_COMPILER_ID MATCHES \"GNU|Clang\")\n";
-    cmake_ss << "    add_compile_options(-O3 -march=native -flto -funroll-loops)\n";
-    cmake_ss << "    add_link_options(-O3 -flto)\n";
+    cmake_ss << "    add_compile_options(-O3)\n";
     cmake_ss << "endif()\n\n";
     // Calculate relative path to runtime
     namespace fs = std::filesystem;
@@ -2041,9 +2040,24 @@ GeneratedOutput generate_output(const ir::Program& program,
     cmake_ss << "    ${GBRT_DIR}/src/ppu.c\n";
     cmake_ss << "    ${GBRT_DIR}/src/audio.c\n";
     cmake_ss << "    ${GBRT_DIR}/src/interpreter.c\n";
-    cmake_ss << "    ${GBRT_DIR}/src/platform_sdl.c\n";
+    cmake_ss << "    ${GBRT_DIR}/src/platform_sdl.cpp\n";
+    cmake_ss << ")\n\n";
+
+    cmake_ss << "# ImGui sources\n";
+    cmake_ss << "target_sources(gbrt PRIVATE\n";
+    cmake_ss << "    ${GBRT_DIR}/third_party/imgui/imgui.cpp\n";
+    cmake_ss << "    ${GBRT_DIR}/third_party/imgui/imgui_draw.cpp\n";
+    cmake_ss << "    ${GBRT_DIR}/third_party/imgui/imgui_tables.cpp\n";
+    cmake_ss << "    ${GBRT_DIR}/third_party/imgui/imgui_widgets.cpp\n";
+    cmake_ss << "    ${GBRT_DIR}/third_party/imgui/imgui_demo.cpp\n";
+    cmake_ss << "    ${GBRT_DIR}/third_party/imgui/backends/imgui_impl_sdl2.cpp\n";
+    cmake_ss << "    ${GBRT_DIR}/third_party/imgui/backends/imgui_impl_sdlrenderer2.cpp\n";
     cmake_ss << ")\n";
-    cmake_ss << "target_include_directories(gbrt PUBLIC ${GBRT_DIR}/include)\n";
+
+    cmake_ss << "target_include_directories(gbrt PUBLIC \n";
+    cmake_ss << "    ${GBRT_DIR}/include\n";
+    cmake_ss << "    ${GBRT_DIR}/third_party/imgui\n";
+    cmake_ss << ")\n";
     cmake_ss << "target_link_libraries(gbrt PUBLIC SDL2::SDL2)\n";
     cmake_ss << "target_compile_definitions(gbrt PUBLIC GB_HAS_SDL2)\n\n";
     cmake_ss << "# Main executable\n";

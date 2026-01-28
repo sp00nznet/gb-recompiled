@@ -114,12 +114,13 @@ static uint8_t apply_palette(uint8_t color, uint8_t palette) {
 /**
  * @brief Render background/window for current scanline
  */
-static void render_bg_scanline(GBPPU* ppu, GBContext* ctx) {
+static void render_bg_scanline(GBPPU* ppu, GBContext* ctx, uint8_t* bg_prio) {
     uint8_t scanline = ppu->ly;
     
     if (!(ppu->lcdc & LCDC_LCD_ENABLE)) {
         /* LCD disabled - blank line */
         memset(&ppu->framebuffer[scanline * GB_SCREEN_WIDTH], 0, GB_SCREEN_WIDTH);
+        if (bg_prio) memset(bg_prio, 0, GB_SCREEN_WIDTH);
         return;
     }
     
@@ -185,6 +186,16 @@ static void render_bg_scanline(GBPPU* ppu, GBContext* ctx) {
         
         /* Apply palette and store */
         ppu->framebuffer[scanline * GB_SCREEN_WIDTH + x] = apply_palette(color, ppu->bgp);
+        if (bg_prio) bg_prio[x] = color;
+        
+        static int debug_log_timer = 0;
+        if (scanline == 72 && x == 80) {
+            debug_log_timer++;
+            if (debug_log_timer >= 60) {
+                printf("[PPU DEBUG] LY=72 X=80 Color=%d BGP=0x%02X\n", color, ppu->bgp);
+                debug_log_timer = 0;
+            }
+        }
     }
     
     /* Increment window line counter if window was used */
@@ -196,7 +207,7 @@ static void render_bg_scanline(GBPPU* ppu, GBContext* ctx) {
 /**
  * @brief Render sprites for current scanline
  */
-static void render_sprites_scanline(GBPPU* ppu, GBContext* ctx) {
+static void render_sprites_scanline(GBPPU* ppu, GBContext* ctx, const uint8_t* bg_prio) {
     if (!(ppu->lcdc & LCDC_OBJ_ENABLE)) {
         return;  /* Sprites disabled */
     }
@@ -250,8 +261,8 @@ static void render_sprites_scanline(GBPPU* ppu, GBContext* ctx) {
             if (color == 0) continue;  /* Color 0 is transparent */
             
             /* Check priority */
-            uint8_t bg_color = ppu->framebuffer[scanline * GB_SCREEN_WIDTH + screen_x];
-            if (behind_bg && bg_color != 0) continue;
+            uint8_t bg_raw_color = bg_prio ? bg_prio[screen_x] : 0;
+            if (behind_bg && bg_raw_color != 0) continue;
             
             ppu->framebuffer[scanline * GB_SCREEN_WIDTH + screen_x] = apply_palette(color, palette);
         }
@@ -259,8 +270,15 @@ static void render_sprites_scanline(GBPPU* ppu, GBContext* ctx) {
 }
 
 void ppu_render_scanline(GBPPU* ppu, GBContext* ctx) {
-    render_bg_scanline(ppu, ctx);
-    render_sprites_scanline(ppu, ctx);
+    if (ppu->ly == 0 && (ctx->cycles % 6000 == 0)) {  // Log occasionally
+         // printf("[PPU] Frame debug: LCDC=%02X BGP=%02X\n", ppu->lcdc, ppu->bgp);
+    }
+
+    uint8_t bg_prio[GB_SCREEN_WIDTH];
+    memset(bg_prio, 0, sizeof(bg_prio));
+
+    render_bg_scanline(ppu, ctx, bg_prio);
+    render_sprites_scanline(ppu, ctx, bg_prio);
     
     /* Debug: log first scanline render details */
     if (ppu->ly == 0) {
@@ -333,7 +351,8 @@ static void check_stat_interrupt(GBPPU* ppu, GBContext* ctx) {
     if (current_state && !ppu->stat_irq_state) {
         /* Request LCD STAT interrupt (IF bit 1) */
         /* DISABLE STAT INTERRUPTS FOR DEBUGGING TETRIS */
-        // ctx->io[0x0F] |= 0x02;
+        ctx->io[0x0F] |= 0x02;
+        // fprintf(stderr, "[PPU] STAT Interrupt Fired! Mode=%d STAT=0x%02X LY=%d LYC=%d\n", ppu->mode, ppu->stat, ppu->ly, ppu->lyc);
     }
     
     ppu->stat_irq_state = current_state;
