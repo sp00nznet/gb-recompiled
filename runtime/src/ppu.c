@@ -6,6 +6,7 @@
 #include "ppu.h"
 #include "gbrt.h"
 #include "gbrt_debug.h"
+#include "hwtrace.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -19,6 +20,29 @@ static const uint32_t dmg_palette[4] = {
     0xFF346856,  /* Dark */
     0xFF081820,  /* Darkest (black) */
 };
+
+/**
+ * @brief Convert CGB RGB555 to ARGB8888
+ */
+static inline uint32_t rgb555_to_argb(uint16_t rgb555) {
+    uint8_t r5 = rgb555 & 0x1F;
+    uint8_t g5 = (rgb555 >> 5) & 0x1F;
+    uint8_t b5 = (rgb555 >> 10) & 0x1F;
+    /* Scale 5-bit to 8-bit: (x << 3) | (x >> 2) */
+    uint8_t r = (r5 << 3) | (r5 >> 2);
+    uint8_t g = (g5 << 3) | (g5 >> 2);
+    uint8_t b = (b5 << 3) | (b5 >> 2);
+    return 0xFF000000 | (r << 16) | (g << 8) | b;
+}
+
+/**
+ * @brief Get a color from CGB palette RAM
+ */
+static inline uint32_t cgb_palette_color(const uint8_t* palette_ram, uint8_t palette_num, uint8_t color_idx) {
+    int offset = palette_num * 8 + color_idx * 2;
+    uint16_t rgb555 = palette_ram[offset] | (palette_ram[offset + 1] << 8);
+    return rgb555_to_argb(rgb555);
+}
 
 /* ============================================================================
  * PPU Initialization
@@ -40,26 +64,44 @@ void ppu_reset(GBPPU* ppu) {
     ppu->lyc = 0;
     ppu->dma = 0;
     ppu->bgp = 0xFC;   /* 11 11 11 00 */
-    ppu->obp0 = 0xFF;
-    ppu->obp1 = 0xFF;
+    ppu->obp0 = 0x00;  /* CGB post-bootrom value */
+    ppu->obp1 = 0x00;  /* CGB post-bootrom value */
     ppu->wy = 0;
     ppu->wx = 0;
-    
-    /* Internal state */
-    ppu->mode = PPU_MODE_OAM;
+
+    /* CGB palette registers */
+    ppu->bcps = 0;
+    ppu->ocps = 0;
+    memset(ppu->bg_palette_ram, 0xFF, sizeof(ppu->bg_palette_ram));
+    memset(ppu->obj_palette_ram, 0xFF, sizeof(ppu->obj_palette_ram));
+
+    /* HDMA state */
+    ppu->hdma_src = 0;
+    ppu->hdma_dst = 0;
+    ppu->hdma_len = 0xFF;
+    ppu->hdma_active = false;
+
+    /* CGB mode - will be set by context init */
+    ppu->cgb_mode = true;  /* Default to CGB since we set A=0x11 */
+
+    /* Internal state - start at LY=143 in HBlank so VBlank fires within ~204 cycles.
+     * This matches the CGB post-bootrom state where the last visible scanline
+     * is about to complete, causing VBlank to fire almost immediately. */
+    ppu->mode = PPU_MODE_HBLANK;
     ppu->mode_cycles = 0;
+    ppu->ly = 143;
     ppu->window_line = 0;
     ppu->window_triggered = false;
     ppu->frame_ready = false;
-    
+
     /* Clear framebuffers */
     memset(ppu->framebuffer, 0, sizeof(ppu->framebuffer));
     for (int i = 0; i < GB_FRAMEBUFFER_SIZE; i++) {
         ppu->rgb_framebuffer[i] = dmg_palette[0];
     }
-    
-    DBG_PPU("PPU reset - LCDC=0x%02X, BGP=0x%02X, mode=%s", 
-            ppu->lcdc, ppu->bgp, ppu_mode_name(ppu->mode));
+
+    DBG_PPU("PPU reset - LCDC=0x%02X, BGP=0x%02X, mode=%s, CGB=%d",
+            ppu->lcdc, ppu->bgp, ppu_mode_name(ppu->mode), ppu->cgb_mode);
 }
 
 /* ============================================================================
@@ -91,11 +133,21 @@ static uint16_t get_window_tilemap_addr(GBPPU* ppu) {
 }
 
 /**
- * @brief Read a byte from VRAM
+ * @brief Read a byte from VRAM bank 0
  */
 static uint8_t vram_read(GBContext* ctx, uint16_t addr) {
     if (addr >= 0x8000 && addr <= 0x9FFF) {
         return ctx->vram[addr - 0x8000];
+    }
+    return 0xFF;
+}
+
+/**
+ * @brief Read a byte from a specific VRAM bank (CGB)
+ */
+static uint8_t vram_read_bank(GBContext* ctx, uint16_t addr, uint8_t bank) {
+    if (addr >= 0x8000 && addr <= 0x9FFF) {
+        return ctx->vram[(bank * 0x2000) + (addr - 0x8000)];
     }
     return 0xFF;
 }
@@ -112,197 +164,210 @@ static uint8_t apply_palette(uint8_t color, uint8_t palette) {
 }
 
 /**
- * @brief Render background/window for current scanline
+ * @brief Render background/window for current scanline (DMG + CGB)
  */
 static void render_bg_scanline(GBPPU* ppu, GBContext* ctx, uint8_t* bg_prio) {
     uint8_t scanline = ppu->ly;
-    
+
     if (!(ppu->lcdc & LCDC_LCD_ENABLE)) {
-        /* LCD disabled - blank line */
         memset(&ppu->framebuffer[scanline * GB_SCREEN_WIDTH], 0, GB_SCREEN_WIDTH);
         if (bg_prio) memset(bg_prio, 0, GB_SCREEN_WIDTH);
         return;
     }
-    
-    bool bg_enable = (ppu->lcdc & LCDC_BG_ENABLE);
-    /* Note: on DMG, LCDC_BG_ENABLE (bit 0) also controls Master Enable (BG+Window). 
-       On CGB, it controls priority. Assuming DMG mostly here. */
-    bool window_enable = bg_enable && (ppu->lcdc & LCDC_WINDOW_ENABLE) && (ppu->wx <= 166) && (ppu->wy <= scanline);
-    
-    /* Track if window was triggered */
+
+    bool bg_enable = ppu->cgb_mode ? true : (ppu->lcdc & LCDC_BG_ENABLE);
+    bool window_enable = (ppu->lcdc & LCDC_WINDOW_ENABLE) && (ppu->wx <= 166) && (ppu->wy <= scanline);
+    if (!ppu->cgb_mode) window_enable = window_enable && (ppu->lcdc & LCDC_BG_ENABLE);
+
     if (window_enable && !ppu->window_triggered) {
         ppu->window_triggered = true;
     }
-    
+
+    int fb_base = scanline * GB_SCREEN_WIDTH;
+
     for (int x = 0; x < GB_SCREEN_WIDTH; x++) {
         uint8_t color = 0;
-        
-        /* Check if we're in window area */
+        uint8_t cgb_palette = 0;
+        bool bg_priority = false;
+
         bool in_window = window_enable && (x >= (ppu->wx - 7));
-        
+
+        int map_x, map_y;
+        uint16_t tilemap_addr;
+
         if (in_window) {
-            /* Render window */
-            int win_x = x - (ppu->wx - 7);
-            int win_y = ppu->window_line;
-            
-            /* Get tile from window tilemap */
-            uint16_t tilemap_addr = get_window_tilemap_addr(ppu);
-            uint8_t tile_x = win_x / 8;
-            uint8_t tile_y = win_y / 8;
-            uint8_t tile_idx = vram_read(ctx, tilemap_addr + tile_y * 32 + tile_x);
-            
-            /* Get pixel from tile */
-            uint16_t tile_addr = get_tile_data_addr(ppu, tile_idx, false);
-            uint8_t pixel_y = win_y % 8;
-            uint8_t pixel_x = win_x % 8;
-            
-            uint8_t lo = vram_read(ctx, tile_addr + pixel_y * 2);
-            uint8_t hi = vram_read(ctx, tile_addr + pixel_y * 2 + 1);
-            
-            uint8_t bit = 7 - pixel_x;
-            color = ((lo >> bit) & 1) | (((hi >> bit) & 1) << 1);
+            map_x = x - (ppu->wx - 7);
+            map_y = ppu->window_line;
+            tilemap_addr = get_window_tilemap_addr(ppu);
         } else if (bg_enable) {
-            /* Render background */
-            int bg_x = (x + ppu->scx) & 0xFF;
-            int bg_y = (scanline + ppu->scy) & 0xFF;
-            
-            /* Get tile from background tilemap */
-            uint16_t tilemap_addr = get_bg_tilemap_addr(ppu);
-            uint8_t tile_x = bg_x / 8;
-            uint8_t tile_y = bg_y / 8;
-            uint8_t tile_idx = vram_read(ctx, tilemap_addr + tile_y * 32 + tile_x);
-            
-            /* Get pixel from tile */
-            uint16_t tile_addr = get_tile_data_addr(ppu, tile_idx, false);
-            uint8_t pixel_y = bg_y % 8;
-            uint8_t pixel_x = bg_x % 8;
-            
-            uint8_t lo = vram_read(ctx, tile_addr + pixel_y * 2);
-            uint8_t hi = vram_read(ctx, tile_addr + pixel_y * 2 + 1);
-            
-            uint8_t bit = 7 - pixel_x;
-            color = ((lo >> bit) & 1) | (((hi >> bit) & 1) << 1);
-        }
-        
-        /* Apply palette and store */
-        ppu->framebuffer[scanline * GB_SCREEN_WIDTH + x] = apply_palette(color, ppu->bgp);
-        if (bg_prio) bg_prio[x] = color;
-        
-        static int debug_log_timer = 0;
-        if (scanline == 72 && x == 80) {
-            debug_log_timer++;
-            if (debug_log_timer >= 60) {
-                printf("[PPU DEBUG] LY=72 X=80 Color=%d BGP=0x%02X\n", color, ppu->bgp);
-                debug_log_timer = 0;
+            map_x = (x + ppu->scx) & 0xFF;
+            map_y = (scanline + ppu->scy) & 0xFF;
+            tilemap_addr = get_bg_tilemap_addr(ppu);
+        } else {
+            /* BG disabled (DMG only) */
+            ppu->framebuffer[fb_base + x] = 0;
+            if (ppu->cgb_mode) {
+                ppu->rgb_framebuffer[fb_base + x] = cgb_palette_color(ppu->bg_palette_ram, 0, 0);
             }
+            if (bg_prio) bg_prio[x] = 0;
+            continue;
         }
+
+        uint8_t tile_col = map_x / 8;
+        uint8_t tile_row = map_y / 8;
+        uint16_t map_offset = tilemap_addr + tile_row * 32 + tile_col;
+
+        /* Read tile index from VRAM bank 0 */
+        uint8_t tile_idx = vram_read_bank(ctx, map_offset, 0);
+
+        /* CGB: read attributes from VRAM bank 1 */
+        uint8_t attrs = 0;
+        uint8_t tile_vram_bank = 0;
+        bool flip_x = false, flip_y = false;
+
+        if (ppu->cgb_mode) {
+            attrs = vram_read_bank(ctx, map_offset, 1);
+            cgb_palette = attrs & BG_ATTR_PALETTE;
+            tile_vram_bank = (attrs & BG_ATTR_VRAM_BANK) ? 1 : 0;
+            flip_x = (attrs & BG_ATTR_FLIP_X) != 0;
+            flip_y = (attrs & BG_ATTR_FLIP_Y) != 0;
+            bg_priority = (attrs & BG_ATTR_PRIORITY) != 0;
+        }
+
+        /* Get pixel from tile */
+        uint16_t tile_addr = get_tile_data_addr(ppu, tile_idx, false);
+        uint8_t pixel_y = map_y % 8;
+        uint8_t pixel_x = map_x % 8;
+
+        if (flip_y) pixel_y = 7 - pixel_y;
+        if (flip_x) pixel_x = 7 - pixel_x;
+
+        uint8_t lo = vram_read_bank(ctx, tile_addr + pixel_y * 2, tile_vram_bank);
+        uint8_t hi = vram_read_bank(ctx, tile_addr + pixel_y * 2 + 1, tile_vram_bank);
+
+        uint8_t bit = 7 - pixel_x;
+        color = ((lo >> bit) & 1) | (((hi >> bit) & 1) << 1);
+
+        if (ppu->cgb_mode) {
+            /* CGB: store raw color for priority, write RGB directly */
+            ppu->framebuffer[fb_base + x] = color;
+            ppu->rgb_framebuffer[fb_base + x] = cgb_palette_color(ppu->bg_palette_ram, cgb_palette, color);
+        } else {
+            /* DMG: apply palette */
+            ppu->framebuffer[fb_base + x] = apply_palette(color, ppu->bgp);
+        }
+        if (bg_prio) bg_prio[x] = bg_priority ? (color | 0x80) : color;
     }
-    
-    /* Increment window line counter if window was used */
+
     if (ppu->window_triggered && window_enable) {
         ppu->window_line++;
     }
 }
 
 /**
- * @brief Render sprites for current scanline
+ * @brief Render sprites for current scanline (DMG + CGB)
  */
 static void render_sprites_scanline(GBPPU* ppu, GBContext* ctx, const uint8_t* bg_prio) {
     if (!(ppu->lcdc & LCDC_OBJ_ENABLE)) {
-        return;  /* Sprites disabled */
+        return;
     }
-    
+
     uint8_t scanline = ppu->ly;
     uint8_t sprite_height = (ppu->lcdc & LCDC_OBJ_SIZE) ? 16 : 8;
-    
+    int fb_base = scanline * GB_SCREEN_WIDTH;
+
     /* Find sprites on this scanline (max 10) */
     int sprite_count = 0;
     int sprites[10];
-    
+
     for (int i = 0; i < 40 && sprite_count < 10; i++) {
         OAMEntry* sprite = (OAMEntry*)(ctx->oam + i * 4);
         int sprite_y = sprite->y - 16;
-        
+
         if (scanline >= sprite_y && scanline < sprite_y + sprite_height) {
             sprites[sprite_count++] = i;
         }
     }
-    
-    /* Render sprites in reverse order (priority - lower index = higher priority) */
+
+    /* Render sprites in reverse order (lower index = higher priority, drawn last) */
     for (int i = sprite_count - 1; i >= 0; i--) {
         OAMEntry* sprite = (OAMEntry*)(ctx->oam + sprites[i] * 4);
         int sprite_y = sprite->y - 16;
         int sprite_x = sprite->x - 8;
-        
+
         uint8_t tile_idx = sprite->tile;
         if (sprite_height == 16) {
-            tile_idx &= 0xFE;  /* Clear bit 0 for 8x16 sprites */
+            tile_idx &= 0xFE;
         }
-        
+
         int line = scanline - sprite_y;
         if (sprite->flags & OAM_FLIP_Y) {
             line = sprite_height - 1 - line;
         }
-        
+
+        /* CGB: sprites can use VRAM bank 0 or 1 */
+        uint8_t tile_bank = 0;
+        if (ppu->cgb_mode) {
+            tile_bank = (sprite->flags & OAM_CGB_BANK) ? 1 : 0;
+        }
+
         uint16_t tile_addr = 0x8000 + tile_idx * 16 + line * 2;
-        uint8_t lo = vram_read(ctx, tile_addr);
-        uint8_t hi = vram_read(ctx, tile_addr + 1);
-        
-        uint8_t palette = (sprite->flags & OAM_PALETTE) ? ppu->obp1 : ppu->obp0;
+        uint8_t lo = vram_read_bank(ctx, tile_addr, tile_bank);
+        uint8_t hi = vram_read_bank(ctx, tile_addr + 1, tile_bank);
+
         bool behind_bg = (sprite->flags & OAM_PRIORITY);
-        
+
         for (int px = 0; px < 8; px++) {
             int screen_x = sprite_x + px;
             if (screen_x < 0 || screen_x >= GB_SCREEN_WIDTH) continue;
-            
+
             int bit_pos = (sprite->flags & OAM_FLIP_X) ? px : (7 - px);
             uint8_t color = ((lo >> bit_pos) & 1) | (((hi >> bit_pos) & 1) << 1);
-            
-            if (color == 0) continue;  /* Color 0 is transparent */
-            
-            /* Check priority */
-            uint8_t bg_raw_color = bg_prio ? bg_prio[screen_x] : 0;
-            if (behind_bg && bg_raw_color != 0) continue;
-            
-            ppu->framebuffer[scanline * GB_SCREEN_WIDTH + screen_x] = apply_palette(color, palette);
+
+            if (color == 0) continue;  /* Transparent */
+
+            /* Priority check */
+            uint8_t bg_raw = bg_prio ? bg_prio[screen_x] : 0;
+            if (ppu->cgb_mode) {
+                /* CGB priority: BG priority attribute (bit 7 in bg_prio) or OAM priority */
+                bool bg_has_priority = (bg_raw & 0x80) != 0;
+                uint8_t bg_color = bg_raw & 0x03;
+                /* If LCDC bit 0 is clear, BG/WIN are always behind OBJ */
+                if (ppu->lcdc & LCDC_BG_ENABLE) {
+                    if ((behind_bg || bg_has_priority) && bg_color != 0) continue;
+                }
+                uint8_t obj_palette = sprite->flags & OAM_CGB_PALETTE;
+                ppu->framebuffer[fb_base + screen_x] = color;
+                ppu->rgb_framebuffer[fb_base + screen_x] = cgb_palette_color(ppu->obj_palette_ram, obj_palette, color);
+            } else {
+                /* DMG priority */
+                if (behind_bg && (bg_raw & 0x03) != 0) continue;
+                uint8_t palette = (sprite->flags & OAM_PALETTE) ? ppu->obp1 : ppu->obp0;
+                ppu->framebuffer[fb_base + screen_x] = apply_palette(color, palette);
+            }
         }
     }
 }
 
 void ppu_render_scanline(GBPPU* ppu, GBContext* ctx) {
-    if (ppu->ly == 0 && (ctx->cycles % 6000 == 0)) {  // Log occasionally
-         // printf("[PPU] Frame debug: LCDC=%02X BGP=%02X\n", ppu->lcdc, ppu->bgp);
-    }
-
     uint8_t bg_prio[GB_SCREEN_WIDTH];
     memset(bg_prio, 0, sizeof(bg_prio));
 
     render_bg_scanline(ppu, ctx, bg_prio);
     render_sprites_scanline(ppu, ctx, bg_prio);
-    
-    /* Debug: log first scanline render details */
-    if (ppu->ly == 0) {
-        // DBG_PPU("Rendered scanline 0 - LCDC=0x%02X, BGP=0x%02X, SCX=%d, SCY=%d",
-        //        ppu->lcdc, ppu->bgp, ppu->scx, ppu->scy);
-    }
 }
 
 /**
- * @brief Convert framebuffer to RGB
+ * @brief Convert framebuffer to RGB (DMG only; CGB writes RGB directly)
  */
 static void convert_to_rgb(GBPPU* ppu) {
-    /* Debug: check if framebuffer has any non-zero pixels */
-    static int convert_count = 0;
-    bool has_content = dbg_has_nonzero_pixels(ppu->framebuffer, GB_FRAMEBUFFER_SIZE);
-    
+    if (ppu->cgb_mode) {
+        /* CGB: rgb_framebuffer is already populated during scanline rendering */
+        return;
+    }
+
     for (int i = 0; i < GB_FRAMEBUFFER_SIZE; i++) {
         ppu->rgb_framebuffer[i] = dmg_palette[ppu->framebuffer[i] & 0x03];
-    }
-    
-    convert_count++;
-    if (convert_count <= 5 || (convert_count % 60 == 0)) {
-        DBG_FRAME("Frame %d converted to RGB - has_content=%d", convert_count, has_content);
-        dbg_dump_framebuffer(ppu->framebuffer, GB_SCREEN_WIDTH);
     }
 }
 
@@ -384,11 +449,34 @@ void ppu_tick(GBPPU* ppu, GBContext* ctx, uint32_t cycles) {
                 ppu_render_scanline(ppu, ctx);
                 
                 ppu->mode = PPU_MODE_HBLANK;
+
+                /* CGB HDMA: transfer 16 bytes per HBlank */
+                if (ppu->hdma_active) {
+                    uint16_t src = ppu->hdma_src;
+                    uint16_t dst = 0x8000 | ppu->hdma_dst;
+                    for (int i = 0; i < 16; i++) {
+                        uint8_t byte = gb_read8(ctx, src + i);
+                        ctx->vram[(ctx->vram_bank * 0x2000) + ((dst + i) & 0x1FFF)] = byte;
+                    }
+                    ppu->hdma_src += 16;
+                    ppu->hdma_dst = (ppu->hdma_dst + 16) & 0x1FFF;
+                    if (ppu->hdma_len == 0) {
+                        ppu->hdma_active = false;
+                        ppu->hdma_len = 0xFF;
+                    } else {
+                        ppu->hdma_len--;
+                    }
+                }
+
                 update_stat(ppu, ctx);
+
+                /* Hardware trace: dump after STAT updated (HBlank mode), matches SameBoy lcd_line_callback */
+                hwtrace_scanline(ctx, ppu->ly);
+
                 check_stat_interrupt(ppu, ctx);
             }
             break;
-            
+
         case PPU_MODE_HBLANK:
             if (ppu->mode_cycles >= CYCLES_HBLANK) {
                 ppu->mode_cycles -= CYCLES_HBLANK;
@@ -405,6 +493,9 @@ void ppu_tick(GBPPU* ppu, GBContext* ctx, uint32_t cycles) {
                         ctx->frame_done = 1;
                     }
                     
+                    /* Hardware trace: VBlank state dump */
+                    hwtrace_vblank(ctx);
+
                     /* Request VBlank interrupt (IF bit 0) */
                     ctx->io[0x0F] |= 0x01;
                 } else {
@@ -443,7 +534,7 @@ void ppu_tick(GBPPU* ppu, GBContext* ctx, uint32_t cycles) {
 uint8_t ppu_read_register(GBPPU* ppu, uint16_t addr) {
     switch (addr) {
         case 0xFF40: return ppu->lcdc;
-        case 0xFF41: return ppu->stat | 0x80;  /* Bit 7 always 1 */
+        case 0xFF41: return ppu->stat | 0x80;
         case 0xFF42: return ppu->scy;
         case 0xFF43: return ppu->scx;
         case 0xFF44: return ppu->ly;
@@ -454,6 +545,11 @@ uint8_t ppu_read_register(GBPPU* ppu, uint16_t addr) {
         case 0xFF49: return ppu->obp1;
         case 0xFF4A: return ppu->wy;
         case 0xFF4B: return ppu->wx;
+        /* CGB palette registers */
+        case 0xFF68: return ppu->bcps;
+        case 0xFF69: return ppu->bg_palette_ram[ppu->bcps & 0x3F];
+        case 0xFF6A: return ppu->ocps;
+        case 0xFF6B: return ppu->obj_palette_ram[ppu->ocps & 0x3F];
         default: return 0xFF;
     }
 }
@@ -526,6 +622,25 @@ void ppu_write_register(GBPPU* ppu, GBContext* ctx, uint16_t addr, uint8_t value
         case 0xFF49: ppu->obp1 = value; break;
         case 0xFF4A: ppu->wy = value; break;
         case 0xFF4B: ppu->wx = value; break;
+        /* CGB palette registers */
+        case 0xFF68: ppu->bcps = value; break;
+        case 0xFF69: {
+            uint8_t idx = ppu->bcps & 0x3F;
+            ppu->bg_palette_ram[idx] = value;
+            if (ppu->bcps & 0x80) { /* Auto-increment, bit 6 can overflow */
+                ppu->bcps = 0x80 | (((ppu->bcps & 0x7F) + 1) & 0x7F);
+            }
+            break;
+        }
+        case 0xFF6A: ppu->ocps = value; break;
+        case 0xFF6B: {
+            uint8_t idx = ppu->ocps & 0x3F;
+            ppu->obj_palette_ram[idx] = value;
+            if (ppu->ocps & 0x80) { /* Auto-increment, bit 6 can overflow */
+                ppu->ocps = 0x80 | (((ppu->ocps & 0x7F) + 1) & 0x7F);
+            }
+            break;
+        }
     }
 }
 

@@ -132,14 +132,23 @@ void gb_context_reset(GBContext* ctx, bool skip_bootrom) {
     if (skip_bootrom) {
         ctx->pc = 0x0100;
         ctx->sp = 0xFFFE;
-        ctx->af = 0x01B0;
-        ctx->bc = 0x0013;
-        ctx->de = 0x00D8;
-        ctx->hl = 0x014D;
+        ctx->af = 0x1180;  /* A=0x11 for CGB mode, F=0x80 (Z flag only, N/H/C clear) */
+        ctx->bc = 0x0000;
+        ctx->de = 0xFF56;
+        ctx->hl = 0x000D;
         gb_unpack_flags(ctx);
         ctx->rom_bank = 1;
         ctx->wram_bank = 1;
-        
+
+        /* DIV counter - CGB boot ROM takes ~65,000 T-cycles.
+         * SameBoy shows DIV=0xFFxx at first VBlank after boot.
+         * The actual value depends on the exact boot ROM cycle count.
+         * We use the value from SameBoy CGB-E (observed: ~0xFFFC at first VBlank,
+         * but that includes cycles from game code too). Boot ROM itself
+         * takes about 0xFFBC cycles (the low byte). */
+        ctx->div_counter = 0xFFBC;
+        ctx->io[0x04] = (uint8_t)(ctx->div_counter >> 8);
+
         ctx->io[0x05] = 0x00; /* TIMA */
         ctx->io[0x06] = 0x00; /* TMA */
         ctx->io[0x07] = 0x00; /* TAC */
@@ -166,11 +175,13 @@ void gb_context_reset(GBContext* ctx, bool skip_bootrom) {
         ctx->io[0x43] = 0x00; /* SCX */
         ctx->io[0x45] = 0x00; /* LYC */
         ctx->io[0x47] = 0xFC; /* BGP */
-        ctx->io[0x48] = 0xFF; /* OBP0 */
-        ctx->io[0x49] = 0xFF; /* OBP1 */
+        ctx->io[0x48] = 0x00; /* OBP0 - CGB post-bootrom value is 0x00 */
+        ctx->io[0x49] = 0x00; /* OBP1 - CGB post-bootrom value is 0x00 */
         ctx->io[0x4A] = 0x00; /* WY */
         ctx->io[0x4B] = 0x00; /* WX */
-        ctx->io[0x80] = 0x00; /* IE */
+        ctx->io[0x0F] = 0x01; /* IF - VBlank interrupt pending (post-bootrom) */
+        ctx->io[0x80] = 0x00; /* IE - game sets this itself */
+        ctx->ime = 0;         /* IME - game enables via EI instruction */
     }
 }
 
@@ -284,6 +295,9 @@ bool gb_context_save_ram(GBContext* ctx) {
  * Memory Access
  * ========================================================================== */
 
+/* Forward declaration - defined in Timing section below */
+static inline void gb_sync(GBContext* ctx);
+
 uint8_t gb_read8(GBContext* ctx, uint16_t addr) {
     /* During OAM DMA, only HRAM (0xFF80-0xFFFE) is accessible */
     if (ctx->dma.active && !(addr >= 0xFF80 && addr < 0xFFFF)) {
@@ -348,7 +362,8 @@ uint8_t gb_read8(GBContext* ctx, uint16_t addr) {
         if (ctx->eram) {
             uint32_t eram_addr = ((uint32_t)ctx->ram_bank * 0x2000) + (addr - 0xA000);
             if (eram_addr < ctx->eram_size) {
-                return ctx->eram[eram_addr];
+                uint8_t val = ctx->eram[eram_addr];
+                        return val;
             }
         }
         return 0xFF;
@@ -373,7 +388,19 @@ uint8_t gb_read8(GBContext* ctx, uint16_t addr) {
              return res;
         }
         if (addr == 0xFF04) return (uint8_t)(ctx->div_counter >> 8);
-        if (addr >= 0xFF40 && addr <= 0xFF4B) return ppu_read_register((GBPPU*)ctx->ppu, addr);
+        if (addr >= 0xFF40 && addr <= 0xFF4B) {
+            /* Sync PPU before reading its registers so mode/LY are up-to-date */
+            gb_sync(ctx);
+            return ppu_read_register((GBPPU*)ctx->ppu, addr);
+        }
+        if (addr >= 0xFF68 && addr <= 0xFF6B) return ppu_read_register((GBPPU*)ctx->ppu, addr);
+        if (addr == 0xFF4F) return ctx->vram_bank | 0xFE; /* VBK: only bit 0 readable */
+        if (addr == 0xFF70) return ctx->wram_bank ? ctx->wram_bank : 1; /* SVBK */
+        if (addr >= 0xFF51 && addr <= 0xFF55) {
+            GBPPU* ppu = (GBPPU*)ctx->ppu;
+            if (addr == 0xFF55) return ppu->hdma_active ? (ppu->hdma_len & 0x7F) : 0xFF;
+            return 0xFF; /* FF51-FF54 are write-only */
+        }
         if (addr >= 0xFF10 && addr <= 0xFF3F) return gb_audio_read(ctx, addr);
         return ctx->io[addr - 0xFF00];
     }
@@ -489,7 +516,11 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
         else if (ctx->mbc_type >= 0x19 && ctx->mbc_type <= 0x1E) {
             if (addr < 0x2000) {
                 /* RAM Enable */
+                uint8_t old = ctx->ram_enabled;
                 ctx->ram_enabled = ((value & 0x0F) == 0x0A);
+                if (old != ctx->ram_enabled) {
+                    fprintf(stderr, "[MBC5] RAM %s (wrote 0x%02X to 0x%04X)\n", ctx->ram_enabled ? "ENABLED" : "DISABLED", value, addr);
+                }
             } else if (addr < 0x3000) {
                 /* ROM Bank Number (lower 8 bits) */
                 ctx->rom_bank = (ctx->rom_bank & 0x100) | value;
@@ -524,7 +555,13 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
     }
     if (addr < 0xC000) {
         /* External RAM / RTC Write */
-        if (!ctx->ram_enabled) return;
+        if (!ctx->ram_enabled) {
+            static int sram_blocked = 0;
+            if (sram_blocked++ < 20) {
+                fprintf(stderr, "[SRAM] BLOCKED write to 0x%04X = 0x%02X (RAM not enabled, bank=%d)\n", addr, value, ctx->ram_bank);
+            }
+            return;
+        }
         
         /* MBC3 RTC mode */
         if (ctx->rtc_mode) {
@@ -555,12 +592,26 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
             uint32_t eram_addr = ((uint32_t)ctx->ram_bank * 0x2000) + (addr - 0xA000);
             if (eram_addr < ctx->eram_size) {
                 ctx->eram[eram_addr] = value;
+                static int sram_writes = 0;
+                sram_writes++;
+                if (sram_writes <= 500) {
+                    fprintf(stderr, "[SRAM] Write #%d: 0x%04X bank=%d = 0x%02X\n", sram_writes, addr, ctx->ram_bank, value);
+                }
             }
         }
         return;
     }
     if (addr < 0xD000) { ctx->wram[addr - 0xC000] = value; return; }
-    if (addr < 0xE000) { ctx->wram[(ctx->wram_bank * WRAM_BANK_SIZE) + (addr - 0xD000)] = value; return; }
+    if (addr < 0xE000) {
+        uint32_t wram_off = (ctx->wram_bank * WRAM_BANK_SIZE) + (addr - 0xD000);
+        /* Watch game state variables */
+        if (addr == 0xDB95 && value != ctx->wram[wram_off]) {
+            fprintf(stderr, "[STATE] wGameplayType %02X→%02X PC=0x%04X bank=%d\n",
+                    ctx->wram[wram_off], value, ctx->pc, ctx->rom_bank);
+        }
+        ctx->wram[wram_off] = value;
+        return;
+    }
     if (addr < 0xFE00) { gb_write8(ctx, addr - 0x2000, value); return; }
     if (addr < 0xFEA0) { 
         /* OAM Write - Check STAT mode 2 or 3 */
@@ -573,6 +624,51 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
     if (addr < 0xFF00) return;
     if (addr < 0xFF80) {
         if (addr >= 0xFF40 && addr <= 0xFF4B) { ppu_write_register((GBPPU*)ctx->ppu, ctx, addr, value); return; }
+        if (addr >= 0xFF68 && addr <= 0xFF6B) { ppu_write_register((GBPPU*)ctx->ppu, ctx, addr, value); return; }
+        if (addr == 0xFF4F) { ctx->vram_bank = value & 0x01; return; } /* VBK: VRAM bank select */
+        if (addr == 0xFF70) { /* SVBK: WRAM bank select */
+            ctx->wram_bank = value & 0x07;
+            if (ctx->wram_bank == 0) ctx->wram_bank = 1;
+            return;
+        }
+        if (addr >= 0xFF51 && addr <= 0xFF55) { /* HDMA registers */
+            GBPPU* ppu = (GBPPU*)ctx->ppu;
+            switch (addr) {
+                case 0xFF51: ppu->hdma_src = (ppu->hdma_src & 0x00FF) | (value << 8); return;
+                case 0xFF52: ppu->hdma_src = (ppu->hdma_src & 0xFF00) | (value & 0xF0); return;
+                case 0xFF53: ppu->hdma_dst = (ppu->hdma_dst & 0x00FF) | ((value & 0x1F) << 8); return;
+                case 0xFF54: ppu->hdma_dst = (ppu->hdma_dst & 0xFF00) | (value & 0xF0); return;
+                case 0xFF55: {
+                    if (ppu->hdma_active && !(value & 0x80)) {
+                        /* Cancel active HDMA */
+                        ppu->hdma_active = false;
+                        return;
+                    }
+                    uint8_t len = (value & 0x7F) + 1; /* Number of 16-byte blocks */
+                    if (value & 0x80) {
+                        /* HBlank DMA (HDMA) - transfer 16 bytes per HBlank */
+                        ppu->hdma_len = value & 0x7F;
+                        ppu->hdma_active = true;
+                    } else {
+                        /* General Purpose DMA (GDMA) - transfer all at once */
+                        uint16_t src = ppu->hdma_src;
+                        uint16_t dst = 0x8000 | ppu->hdma_dst;
+                        for (int i = 0; i < len * 16; i++) {
+                            uint8_t byte = gb_read8(ctx, src + i);
+                            ctx->vram[(ctx->vram_bank * 0x2000) + ((dst + i) & 0x1FFF)] = byte;
+                        }
+                        ppu->hdma_src += len * 16;
+                        ppu->hdma_dst = (ppu->hdma_dst + len * 16) & 0x1FFF;
+                        ppu->hdma_active = false;
+                        ppu->hdma_len = 0xFF;
+                        /* GDMA takes len * 8 M-cycles in normal speed */
+                        gb_add_cycles(ctx, len * 32);
+                    }
+                    return;
+                }
+            }
+            return;
+        }
         if (addr >= 0xFF10 && addr <= 0xFF3F) { gb_audio_write(ctx, addr, value); return; }
         if (addr == 0xFF04) { 
             uint16_t old_div = ctx->div_counter;
@@ -980,10 +1076,11 @@ void gb_tick(GBContext* ctx, uint32_t cycles) {
         }
     }
     
-    if ((ctx->cycles & 0xFF) < cycles || (ctx->ime && (ctx->io[0x0F] & ctx->io[0x80] & 0x1F))) {
-        gb_sync(ctx);
-        if (ctx->frame_done || (ctx->ime && (ctx->io[0x0F] & ctx->io[0x80] & 0x1F))) ctx->stopped = 1;
-    }
+    /* Sync PPU every tick for accurate frame boundaries.
+     * This is slower than the ~256-cycle batch sync but ensures
+     * recompiled functions don't overshoot VBlank by thousands of cycles. */
+    gb_sync(ctx);
+    if (ctx->frame_done || (ctx->ime && (ctx->io[0x0F] & ctx->io[0x80] & 0x1F))) ctx->stopped = 1;
     if (ctx->apu) gb_audio_step(ctx, cycles);
     if (ctx->ime_pending) { ctx->ime = 1; ctx->ime_pending = 0; }
 }

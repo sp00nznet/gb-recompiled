@@ -92,6 +92,13 @@ typedef struct {
 #define OAM_CGB_BANK    0x08  /* Bit 3: VRAM bank (CGB only) */
 #define OAM_CGB_PALETTE 0x07  /* Bits 0-2: Palette number (CGB only) */
 
+/* CGB BG Map Attribute Flags (VRAM bank 1) */
+#define BG_ATTR_PALETTE   0x07  /* Bits 0-2: BG palette number */
+#define BG_ATTR_VRAM_BANK 0x08  /* Bit 3: VRAM bank for tile data */
+#define BG_ATTR_FLIP_X    0x20  /* Bit 5: Horizontal flip */
+#define BG_ATTR_FLIP_Y    0x40  /* Bit 6: Vertical flip */
+#define BG_ATTR_PRIORITY  0x80  /* Bit 7: BG-to-OAM priority */
+
 /* ============================================================================
  * PPU State
  * ========================================================================== */
@@ -112,23 +119,38 @@ typedef struct GBPPU {
     uint8_t obp1;       /* 0xFF49 - OBJ Palette 1 */
     uint8_t wy;         /* 0xFF4A - Window Y */
     uint8_t wx;         /* 0xFF4B - Window X */
-    
+
+    /* CGB Palette Registers */
+    uint8_t bcps;       /* 0xFF68 - BG Palette Index (auto-increment in bit 7) */
+    uint8_t ocps;       /* 0xFF6A - OBJ Palette Index (auto-increment in bit 7) */
+    uint8_t bg_palette_ram[64];   /* 8 palettes * 4 colors * 2 bytes (RGB555) */
+    uint8_t obj_palette_ram[64];  /* 8 palettes * 4 colors * 2 bytes (RGB555) */
+
+    /* HDMA state (CGB) */
+    uint16_t hdma_src;       /* Source address */
+    uint16_t hdma_dst;       /* Destination address (VRAM) */
+    uint8_t hdma_len;        /* Remaining length (in 16-byte blocks - 1) */
+    bool hdma_active;        /* HDMA (HBlank DMA) is in progress */
+
+    /* CGB mode flag */
+    bool cgb_mode;      /* Running as CGB (A=0x11 at boot) */
+
     /* Internal state */
     bool stat_irq_state;
     PPUMode mode;
     uint32_t mode_cycles;     /* Cycles in current mode */
     uint8_t window_line;      /* Current window internal line counter */
     bool window_triggered;    /* Window was triggered this frame */
-    
+
     /* Framebuffer (2-bit color indices) */
     uint8_t framebuffer[GB_FRAMEBUFFER_SIZE];
-    
+
     /* RGB framebuffer for display (32-bit RGBA) */
     uint32_t rgb_framebuffer[GB_FRAMEBUFFER_SIZE];
-    
+
     /* Frame complete flag */
     bool frame_ready;
-    
+
 } GBPPU;
 
 /* ============================================================================

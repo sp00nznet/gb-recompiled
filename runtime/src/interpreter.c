@@ -89,15 +89,9 @@ static void set_reg8(GBContext* ctx, uint8_t idx, uint8_t val) {
 void gb_interpret(GBContext* ctx, uint16_t addr) {
     /* Set PC to the address we want to execute */
     ctx->pc = addr;
-    
+
     /* Interpreter entry logging */
-#ifdef GB_DEBUG_REGS
-    static int entry_count = 0;
-    entry_count++;
-    if (entry_count <= 100) {
-        fprintf(stderr, "[INTERP] Enter interpreter at 0x%04X (entry #%d)\n", addr, entry_count);
-    }
-#endif
+    /* Interpreter entry logging disabled for performance */
     gbrt_log_trace(ctx, (addr < 0x4000) ? 0 : ctx->rom_bank, addr);
 
     uint32_t instructions_executed = 0;
@@ -142,10 +136,22 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
         
         /* NOTE: Previously we returned immediately when pc < 0x8000 (ROM area),
          * expecting the dispatcher to have compiled code for all ROM addresses.
-         * However, static analysis may miss code paths (like cpu_instrs.gb's 
+         * However, static analysis may miss code paths (like cpu_instrs.gb's
          * callback tables), so we MUST interpret ROM code too when called.
          * The interpreter is now a universal fallback for ANY uncompiled code.
          */
+
+        /* Guard: stop if PC is in OAM, echo RAM, or other non-code areas */
+        if (ctx->pc >= 0xE000 && ctx->pc < 0xFE00) {
+            /* Echo RAM — not real code, PC went off the rails */
+            fprintf(stderr, "[INTERP] ERROR: PC in echo RAM at 0x%04X, returning to dispatch\n", ctx->pc);
+            return;
+        }
+        if (ctx->pc >= 0xFE00 && ctx->pc < 0xFF00 && ctx->pc >= 0xFEA0) {
+            /* Unusable OAM area */
+            fprintf(stderr, "[INTERP] ERROR: PC in unusable memory at 0x%04X, returning to dispatch\n", ctx->pc);
+            return;
+        }
 
         /* HRAM DMA Interception */
         /* Check for standard HRAM DMA routine: LDH (0xFF46), A */
