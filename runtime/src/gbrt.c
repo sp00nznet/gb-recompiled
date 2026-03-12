@@ -140,13 +140,10 @@ void gb_context_reset(GBContext* ctx, bool skip_bootrom) {
         ctx->rom_bank = 1;
         ctx->wram_bank = 1;
 
-        /* DIV counter - CGB boot ROM takes ~65,000 T-cycles.
-         * SameBoy shows DIV=0xFFxx at first VBlank after boot.
-         * The actual value depends on the exact boot ROM cycle count.
-         * We use the value from SameBoy CGB-E (observed: ~0xFFFC at first VBlank,
-         * but that includes cycles from game code too). Boot ROM itself
-         * takes about 0xFFBC cycles (the low byte). */
-        ctx->div_counter = 0xFFBC;
+        /* DIV counter - match SameBoy's post-bootrom init value of 8.
+         * SameBoy calls GB_set_internal_div_counter(gb, 8) after init.
+         * The speed switch STOP instruction will reset DIV to 0. */
+        ctx->div_counter = 8;
         ctx->io[0x04] = (uint8_t)(ctx->div_counter >> 8);
 
         ctx->io[0x05] = 0x00; /* TIMA */
@@ -1080,6 +1077,17 @@ void gb_tick(GBContext* ctx, uint32_t cycles) {
      * This is slower than the ~256-cycle batch sync but ensures
      * recompiled functions don't overshoot VBlank by thousands of cycles. */
     gb_sync(ctx);
+
+    /* Speed switch halt countdown */
+    if (ctx->speed_switch_halt > 0) {
+        ctx->speed_switch_halt -= (int32_t)cycles;
+        if (ctx->speed_switch_halt <= 0) {
+            ctx->speed_switch_halt = 0;
+            ctx->halted = 0;
+            fprintf(stderr, "[GBRT] Speed switch halt complete, resuming CPU\n");
+        }
+    }
+
     if (ctx->frame_done || (ctx->ime && (ctx->io[0x0F] & ctx->io[0x80] & 0x1F))) ctx->stopped = 1;
     if (ctx->apu) gb_audio_step(ctx, cycles);
     if (ctx->ime_pending) { ctx->ime = 1; ctx->ime_pending = 0; }
@@ -1133,8 +1141,9 @@ uint32_t gb_run_frame(GBContext* ctx) {
     while (!ctx->frame_done) {
         gb_handle_interrupts(ctx);
         
-        /* Check for HALT exit condition (even if IME=0) */
-        if (ctx->halted) {
+        /* Check for HALT exit condition (even if IME=0).
+         * Don't exit halt during speed switch (countdown handles that). */
+        if (ctx->halted && ctx->speed_switch_halt <= 0) {
              if (ctx->io[0x0F] & ctx->io[0x80] & 0x1F) {
                  ctx->halted = 0;
              }
@@ -1177,7 +1186,35 @@ const uint32_t* gb_get_framebuffer(GBContext* ctx) {
 }
 
 void gb_halt(GBContext* ctx) { ctx->halted = 1; }
-void gb_stop(GBContext* ctx) { ctx->stopped = 1; }
+
+void gb_stop(GBContext* ctx) {
+    /* CGB speed switch: if KEY1 bit 0 is set, toggle speed mode */
+    uint8_t key1 = ctx->io[0x4D];
+    if (key1 & 0x01) {
+        /* Toggle bit 7 (current speed indicator), clear bit 0 (switch request) */
+        ctx->io[0x4D] = (key1 ^ 0x80) & 0xFE;
+
+        /* DIV counter resets immediately at start of speed switch */
+        ctx->div_counter = 0;
+        ctx->io[0x04] = 0;
+
+        /* CPU halts for the speed switch duration. SameBoy uses 0x20008 M-cycles.
+         * The speed toggle happens at M-cycle 6 (single→double). After that,
+         * PPU gets 1:1 M-cycle mapping (double speed). So:
+         * - First 6 M-cycles (single speed, 5 frozen): ~2 PPU T-cycles
+         * - Remaining 131074 M-cycles (double speed): 131074 PPU T-cycles
+         * Total: ~131076 PPU T-cycles ≈ 1.87 frames */
+        ctx->speed_switch_halt = 131076;
+        ctx->halted = 1;
+        ctx->stopped = 1;  /* Force return from recompiled function */
+
+        fprintf(stderr, "[GBRT] CGB speed switch: KEY1=0x%02X (double_speed=%d), halt=%d T-cycles\n",
+                ctx->io[0x4D], (ctx->io[0x4D] >> 7) & 1, ctx->speed_switch_halt);
+    } else {
+        /* Normal STOP (not speed switch) */
+        ctx->stopped = 1;
+    }
+}
 bool gb_frame_complete(GBContext* ctx) { return ctx->frame_done != 0; }
 
 void gb_set_platform_callbacks(GBContext* ctx, const GBPlatformCallbacks* c) {

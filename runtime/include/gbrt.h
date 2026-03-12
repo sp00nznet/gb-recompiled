@@ -114,6 +114,7 @@ typedef struct GBContext {
     uint8_t halted;       /**< CPU is halted */
     uint8_t stopped;      /**< CPU is stopped */
     uint8_t halt_bug;     /**< HALT bug: next instruction byte read twice */
+    int32_t speed_switch_halt;  /**< Speed switch halt countdown (T-cycles, 0=inactive) */
     
     /* OAM DMA state */
     struct {

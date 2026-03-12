@@ -84,12 +84,14 @@ void ppu_reset(GBPPU* ppu) {
     /* CGB mode - will be set by context init */
     ppu->cgb_mode = true;  /* Default to CGB since we set A=0x11 */
 
-    /* Internal state - start at LY=143 in HBlank so VBlank fires within ~204 cycles.
-     * This matches the CGB post-bootrom state where the last visible scanline
-     * is about to complete, causing VBlank to fire almost immediately. */
-    ppu->mode = PPU_MODE_HBLANK;
+    /* Internal state - start in VBlank mode at LY=144 to match SameBoy's
+     * post-bootrom state (STAT=0x01 = VBlank). The first gb_run_frame will
+     * complete the VBlank period, render a full frame (LY 0-143), then
+     * trigger frame_done at the next VBlank. This ensures frame 0 is a
+     * complete visible frame, matching SameBoy's tracing. */
+    ppu->mode = PPU_MODE_VBLANK;
     ppu->mode_cycles = 0;
-    ppu->ly = 143;
+    ppu->ly = 144;
     ppu->window_line = 0;
     ppu->window_triggered = false;
     ppu->frame_ready = false;
