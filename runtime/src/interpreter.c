@@ -141,11 +141,10 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
          * The interpreter is now a universal fallback for ANY uncompiled code.
          */
 
-        /* Guard: stop if PC is in OAM, echo RAM, or other non-code areas */
+        /* Guard: map echo RAM to real WRAM (echo mirrors 0xC000-0xDDFF at 0xE000-0xFDFF) */
         if (ctx->pc >= 0xE000 && ctx->pc < 0xFE00) {
-            /* Echo RAM — not real code, PC went off the rails */
-            fprintf(stderr, "[INTERP] ERROR: PC in echo RAM at 0x%04X, returning to dispatch\n", ctx->pc);
-            return;
+            ctx->pc -= 0x2000;
+            /* Fall through to interpret from the real WRAM address */
         }
         if (ctx->pc >= 0xFE00 && ctx->pc < 0xFF00 && ctx->pc >= 0xFEA0) {
             /* Unusable OAM area */

@@ -1135,7 +1135,11 @@ uint32_t gb_run_frame(GBContext* ctx) {
     static int fcount = 0;
     fcount++;
     if (fcount % 60 == 0) {
-        fprintf(stderr, "[FRAME] Frame %d, Cycles: %u\n", fcount, ctx->cycles);
+        /* DB95 is at WRAM offset 0x1B95 (0xDB95 - 0xC000) */
+        uint8_t gpt = ctx->wram[0x1B95];
+        uint8_t gps = ctx->wram[0x1B96];
+        fprintf(stderr, "[FRAME] Frame %d, Cycles: %u, GameplayType=%02X/%02X\n",
+                fcount, ctx->cycles, gpt, gps);
     }
 
     while (!ctx->frame_done) {
