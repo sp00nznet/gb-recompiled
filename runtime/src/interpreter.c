@@ -91,7 +91,12 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
     ctx->pc = addr;
 
     /* Interpreter entry logging */
-    /* Interpreter entry logging disabled for performance */
+    static int interp_entry_count = 0;
+    interp_entry_count++;
+    if (addr >= 0xC000 || interp_entry_count > 100000) {
+        fprintf(stderr, "[INTERP] Entry #%d addr=0x%04X bank=%d A=%02X SP=%04X HL=%04X\n",
+                interp_entry_count, addr, ctx->rom_bank, ctx->a, ctx->sp, ctx->hl);
+    }
     gbrt_log_trace(ctx, (addr < 0x4000) ? 0 : ctx->rom_bank, addr);
 
     uint32_t instructions_executed = 0;
@@ -145,6 +150,33 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
         if (ctx->pc >= 0xE000 && ctx->pc < 0xFE00) {
             ctx->pc -= 0x2000;
             /* Fall through to interpret from the real WRAM address */
+        }
+        /* Debug: log WRAM code execution */
+        if (ctx->pc >= 0xC000 && ctx->pc < 0xE000) {
+            static int wram_exec_count = 0;
+            static uint16_t last_wram_pc = 0;
+            if (ctx->pc != last_wram_pc && wram_exec_count++ < 20) {
+                last_wram_pc = ctx->pc;
+                fprintf(stderr, "[INTERP] WRAM exec at 0x%04X: %02X %02X %02X %02X | SP=%04X A=%02X bank=%d\n",
+                        ctx->pc, gb_read8(ctx, ctx->pc), gb_read8(ctx, ctx->pc+1),
+                        gb_read8(ctx, ctx->pc+2), gb_read8(ctx, ctx->pc+3),
+                        ctx->sp, ctx->a, ctx->rom_bank);
+            }
+        }
+        /* Guard: VRAM (0x8000-0x9FFF) is tile data, not executable code */
+        if (ctx->pc >= 0x8000 && ctx->pc < 0xA000) {
+            static int vram_count = 0;
+            if (vram_count++ < 5) {
+                fprintf(stderr, "[INTERP] CRASH: PC in VRAM at 0x%04X! SP=0x%04X "
+                        "Stack: %04X %04X %04X %04X | A=%02X bank=%d\n",
+                        ctx->pc, ctx->sp,
+                        (uint16_t)(gb_read8(ctx, ctx->sp) | (gb_read8(ctx, ctx->sp+1)<<8)),
+                        (uint16_t)(gb_read8(ctx, ctx->sp+2) | (gb_read8(ctx, ctx->sp+3)<<8)),
+                        (uint16_t)(gb_read8(ctx, ctx->sp+4) | (gb_read8(ctx, ctx->sp+5)<<8)),
+                        (uint16_t)(gb_read8(ctx, ctx->sp+6) | (gb_read8(ctx, ctx->sp+7)<<8)),
+                        ctx->a, ctx->rom_bank);
+            }
+            return;
         }
         if (ctx->pc >= 0xFE00 && ctx->pc < 0xFF00 && ctx->pc >= 0xFEA0) {
             /* Unusable OAM area */

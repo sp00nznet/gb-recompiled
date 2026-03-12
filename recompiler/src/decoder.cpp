@@ -396,6 +396,7 @@ void Decoder::decode_main(Instruction& instr, uint8_t opcode,
             
         case 0x86: // ADD A,(HL)
             instr.type = InstructionType::ADD_A_HL;
+            instr.reg8_src = Reg8::HL_IND;
             instr.cycles = 8;
             break;
             
@@ -408,6 +409,7 @@ void Decoder::decode_main(Instruction& instr, uint8_t opcode,
             
         case 0x8E: // ADC A,(HL)
             instr.type = InstructionType::ADC_A_HL;
+            instr.reg8_src = Reg8::HL_IND;
             instr.cycles = 8;
             break;
             
@@ -420,6 +422,7 @@ void Decoder::decode_main(Instruction& instr, uint8_t opcode,
             
         case 0x96: // SUB (HL)
             instr.type = InstructionType::SUB_A_HL;
+            instr.reg8_src = Reg8::HL_IND;
             instr.cycles = 8;
             break;
             
@@ -432,6 +435,7 @@ void Decoder::decode_main(Instruction& instr, uint8_t opcode,
             
         case 0x9E: // SBC A,(HL)
             instr.type = InstructionType::SBC_A_HL;
+            instr.reg8_src = Reg8::HL_IND;
             instr.cycles = 8;
             break;
             
@@ -444,6 +448,7 @@ void Decoder::decode_main(Instruction& instr, uint8_t opcode,
             
         case 0xA6: // AND (HL)
             instr.type = InstructionType::AND_A_HL;
+            instr.reg8_src = Reg8::HL_IND;
             instr.cycles = 8;
             break;
             
@@ -456,6 +461,7 @@ void Decoder::decode_main(Instruction& instr, uint8_t opcode,
             
         case 0xAE: // XOR (HL)
             instr.type = InstructionType::XOR_A_HL;
+            instr.reg8_src = Reg8::HL_IND;
             instr.cycles = 8;
             break;
             
@@ -468,6 +474,7 @@ void Decoder::decode_main(Instruction& instr, uint8_t opcode,
             
         case 0xB6: // OR (HL)
             instr.type = InstructionType::OR_A_HL;
+            instr.reg8_src = Reg8::HL_IND;
             instr.cycles = 8;
             break;
             
@@ -480,6 +487,7 @@ void Decoder::decode_main(Instruction& instr, uint8_t opcode,
             
         case 0xBE: // CP (HL)
             instr.type = InstructionType::CP_A_HL;
+            instr.reg8_src = Reg8::HL_IND;
             instr.cycles = 8;
             break;
             

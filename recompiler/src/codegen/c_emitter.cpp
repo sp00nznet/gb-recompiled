@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <algorithm>
 #include <set>
+#include <string>
 
 namespace gbrecomp {
 namespace codegen {
@@ -583,6 +584,12 @@ static const char* get_reg8_name(int idx) {
     return reg8_names[idx];
 }
 
+/* Helper: emit the C expression for a reg8 operand (handles (HL) = index 6) */
+static std::string reg8_expr(int idx) {
+    if (idx == 6) return "gb_read8(ctx, ctx->hl)";
+    return std::string("ctx->") + reg8_names[idx];
+}
+
 static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& instr, 
                                 const ir::Program& program, int indent, 
                                 const GeneratorOptions& options,
@@ -697,73 +704,73 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
             
         case ir::Opcode::ADD8:
             if (instr.src.type == ir::OperandType::IMM8) {
-                out << "gb_add8(ctx, 0x" << std::hex << std::setfill('0') 
+                out << "gb_add8(ctx, 0x" << std::hex << std::setfill('0')
                     << std::setw(2) << (int)instr.src.value.imm8 << std::dec << ");\n";
             } else {
-                out << "gb_add8(ctx, ctx->" << reg8_names[instr.src.value.reg8] << ");\n";
+                out << "gb_add8(ctx, " << reg8_expr(instr.src.value.reg8) << ");\n";
             }
             break;
-            
+
         case ir::Opcode::ADC8:
             if (instr.src.type == ir::OperandType::IMM8) {
-                out << "gb_adc8(ctx, 0x" << std::hex << std::setfill('0') 
+                out << "gb_adc8(ctx, 0x" << std::hex << std::setfill('0')
                     << std::setw(2) << (int)instr.src.value.imm8 << std::dec << ");\n";
             } else {
-                out << "gb_adc8(ctx, ctx->" << reg8_names[instr.src.value.reg8] << ");\n";
+                out << "gb_adc8(ctx, " << reg8_expr(instr.src.value.reg8) << ");\n";
             }
             break;
-            
+
         case ir::Opcode::SUB8:
             if (instr.src.type == ir::OperandType::IMM8) {
-                out << "gb_sub8(ctx, 0x" << std::hex << std::setfill('0') 
+                out << "gb_sub8(ctx, 0x" << std::hex << std::setfill('0')
                     << std::setw(2) << (int)instr.src.value.imm8 << std::dec << ");\n";
             } else {
-                out << "gb_sub8(ctx, ctx->" << reg8_names[instr.src.value.reg8] << ");\n";
+                out << "gb_sub8(ctx, " << reg8_expr(instr.src.value.reg8) << ");\n";
             }
             break;
-            
+
         case ir::Opcode::SBC8:
             if (instr.src.type == ir::OperandType::IMM8) {
-                out << "gb_sbc8(ctx, 0x" << std::hex << std::setfill('0') 
+                out << "gb_sbc8(ctx, 0x" << std::hex << std::setfill('0')
                     << std::setw(2) << (int)instr.src.value.imm8 << std::dec << ");\n";
             } else {
-                out << "gb_sbc8(ctx, ctx->" << reg8_names[instr.src.value.reg8] << ");\n";
+                out << "gb_sbc8(ctx, " << reg8_expr(instr.src.value.reg8) << ");\n";
             }
             break;
-            
+
         case ir::Opcode::AND8:
             if (instr.src.type == ir::OperandType::IMM8) {
-                out << "gb_and8(ctx, 0x" << std::hex << std::setfill('0') 
+                out << "gb_and8(ctx, 0x" << std::hex << std::setfill('0')
                     << std::setw(2) << (int)instr.src.value.imm8 << std::dec << ");\n";
             } else {
-                out << "gb_and8(ctx, ctx->" << reg8_names[instr.src.value.reg8] << ");\n";
+                out << "gb_and8(ctx, " << reg8_expr(instr.src.value.reg8) << ");\n";
             }
             break;
-            
+
         case ir::Opcode::OR8:
             if (instr.src.type == ir::OperandType::IMM8) {
-                out << "gb_or8(ctx, 0x" << std::hex << std::setfill('0') 
+                out << "gb_or8(ctx, 0x" << std::hex << std::setfill('0')
                     << std::setw(2) << (int)instr.src.value.imm8 << std::dec << ");\n";
             } else {
-                out << "gb_or8(ctx, ctx->" << reg8_names[instr.src.value.reg8] << ");\n";
+                out << "gb_or8(ctx, " << reg8_expr(instr.src.value.reg8) << ");\n";
             }
             break;
-            
+
         case ir::Opcode::XOR8:
             if (instr.src.type == ir::OperandType::IMM8) {
-                out << "gb_xor8(ctx, 0x" << std::hex << std::setfill('0') 
+                out << "gb_xor8(ctx, 0x" << std::hex << std::setfill('0')
                     << std::setw(2) << (int)instr.src.value.imm8 << std::dec << ");\n";
             } else {
-                out << "gb_xor8(ctx, ctx->" << reg8_names[instr.src.value.reg8] << ");\n";
+                out << "gb_xor8(ctx, " << reg8_expr(instr.src.value.reg8) << ");\n";
             }
             break;
-            
+
         case ir::Opcode::CP8:
             if (instr.src.type == ir::OperandType::IMM8) {
-                out << "gb_cp8(ctx, 0x" << std::hex << std::setfill('0') 
+                out << "gb_cp8(ctx, 0x" << std::hex << std::setfill('0')
                     << std::setw(2) << (int)instr.src.value.imm8 << std::dec << ");\n";
             } else {
-                out << "gb_cp8(ctx, ctx->" << reg8_names[instr.src.value.reg8] << ");\n";
+                out << "gb_cp8(ctx, " << reg8_expr(instr.src.value.reg8) << ");\n";
             }
             break;
             
