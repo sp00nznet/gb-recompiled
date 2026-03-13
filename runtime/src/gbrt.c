@@ -597,11 +597,7 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
             uint32_t eram_addr = ((uint32_t)ctx->ram_bank * 0x2000) + (addr - 0xA000);
             if (eram_addr < ctx->eram_size) {
                 ctx->eram[eram_addr] = value;
-                static int sram_writes = 0;
-                sram_writes++;
-                if (sram_writes <= 500) {
-                    fprintf(stderr, "[SRAM] Write #%d: 0x%04X bank=%d = 0x%02X\n", sram_writes, addr, ctx->ram_bank, value);
-                }
+                /* SRAM write logging disabled */
             }
         }
         return;

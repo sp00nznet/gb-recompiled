@@ -615,9 +615,7 @@ void ppu_write_register(GBPPU* ppu, GBContext* ctx, uint16_t addr, uint8_t value
             break;
         case 0xFF47: 
             DBG_REGS("BGP palette: 0x%02X -> 0x%02X", ppu->bgp, value);
-            if (value == 0x00 || value == 0xFF) {
-                fprintf(stderr, "[PPU] BGP set to potentially uniform color: 0x%02X\n", value);
-            }
+            /* BGP uniform color logging disabled */
             ppu->bgp = value; 
             break;
         case 0xFF48: ppu->obp0 = value; break;
