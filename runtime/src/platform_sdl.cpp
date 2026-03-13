@@ -7,6 +7,7 @@
 #include "gbrt.h"   /* For GBPlatformCallbacks */
 #include "ppu.h"
 #include "gbrt_debug.h"
+#include "menu_gui.h"
 
 #ifdef GB_HAS_SDL2
 #include <SDL.h>
@@ -26,14 +27,10 @@ static uint32_t g_last_frame_time = 0;
 static SDL_AudioDeviceID g_audio_device = 0;
 static bool g_vsync = true;
 
-/* Menu State */
-static bool g_show_menu = false;
-static int g_speed_percent = 100;
-static int g_palette_idx = 0;
-static const char* g_palette_names[] = { "Original (Green)", "Black & White (Pocket)", "Amber (Plasma)" };
-static const char* g_scale_names[] = { "1x (160x144)", "2x (320x288)", "3x (480x432)", "4x (640x576)", "5x (800x720)", "6x (960x864)", "7x (1120x1008)", "8x (1280x1152)" };
+/* Palette data for DMG-mode color remapping */
 static const uint32_t g_palettes[][4] = {
-    { 0xFFE0F8D0, 0xFF88C070, 0xFF346856, 0xFF081820 }, // Original
+    { 0xFFE0F8D0, 0xFF88C070, 0xFF346856, 0xFF081820 }, // CGB Original
+    { 0xFFE0F8D0, 0xFF88C070, 0xFF346856, 0xFF081820 }, // Classic Green (same as CGB)
     { 0xFFFFFFFF, 0xFFAAAAAA, 0xFF555555, 0xFF000000 }, // B&W
     { 0xFFFFB000, 0xFFCB4F0E, 0xFF800000, 0xFF330000 }  // Amber
 };
@@ -41,6 +38,9 @@ static const uint32_t g_palettes[][4] = {
 /* Joypad state - exported for gbrt.c to access */
 uint8_t g_joypad_buttons = 0xFF;  /* Active low: Start, Select, B, A */
 uint8_t g_joypad_dpad = 0xFF;     /* Active low: Down, Up, Left, Right */
+
+/* Stored context for menu access */
+static GBContext* g_ctx = NULL;
 
 /* ============================================================================
  * Automation State
@@ -253,7 +253,7 @@ bool gb_platform_init(int scale) {
     
     fprintf(stderr, "[SDL] Creating window...\n");
     g_window = SDL_CreateWindow(
-        "GameBoy Recompiled",
+        "Link's Awakening Recompiled",
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
         GB_SCREEN_WIDTH * g_scale,
@@ -294,12 +294,13 @@ bool gb_platform_init(int scale) {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
 
-    // Setup Dear ImGui style
-    ImGui::StyleColorsDark();
-
     // Setup Platform/Renderer backends
     ImGui_ImplSDL2_InitForSDLRenderer(g_window, g_renderer);
     ImGui_ImplSDLRenderer2_Init(g_renderer);
+
+    // Initialize menu system (applies theme)
+    menu_gui_init();
+    menu_gui_set_scale(g_scale);
 
     g_texture = SDL_CreateTexture(
         g_renderer,
@@ -322,6 +323,10 @@ bool gb_platform_init(int scale) {
 }
 
 bool gb_platform_poll_events(GBContext* ctx) {
+    g_ctx = ctx;  /* Store for menu access */
+
+    if (menu_gui_quit_requested()) return false;
+
     SDL_Event event;
     uint8_t joyp = ctx ? ctx->io[0x00] : 0xFF;
     bool dpad_selected = !(joyp & 0x10);
@@ -385,10 +390,16 @@ bool gb_platform_poll_events(GBContext* ctx) {
                     
                     case SDL_SCANCODE_ESCAPE:
                         if (pressed) {
-                            g_show_menu = !g_show_menu;
+                            menu_gui_toggle_settings();
                         }
-                        return true; // Don't block
-                        
+                        return true;
+
+                    case SDL_SCANCODE_F2:
+                        if (pressed) {
+                            menu_gui_toggle_debug();
+                        }
+                        return true;
+
                     default:
                         break;
                 }
@@ -472,7 +483,7 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
     
     if (g_frame_count % 60 == 0) {
         char title[64];
-        snprintf(title, sizeof(title), "GameBoy Recompiled - Frame %d", g_frame_count);
+        snprintf(title, sizeof(title), "Link's Awakening Recompiled - Frame %d", g_frame_count);
         SDL_SetWindowTitle(g_window, title);
     }
     
@@ -484,11 +495,12 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
     const uint32_t* src = framebuffer;
     uint32_t* dst = (uint32_t*)pixels;
     
-    if (g_palette_idx == 0) {
+    int palette_idx = menu_gui_get_palette_idx();
+    if (palette_idx == 0) {
         memcpy(dst, src, GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT * sizeof(uint32_t));
     } else {
         uint32_t original_palette[4] = { 0xFFE0F8D0, 0xFF88C070, 0xFF346856, 0xFF081820 };
-        
+
         for (int i = 0; i < GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT; i++) {
             uint32_t c = src[i];
             int color_idx = -1;
@@ -496,11 +508,11 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
             else if (c == original_palette[1]) color_idx = 1;
             else if (c == original_palette[2]) color_idx = 2;
             else if (c == original_palette[3]) color_idx = 3;
-            
+
             if (color_idx >= 0) {
-                dst[i] = g_palettes[g_palette_idx][color_idx];
+                dst[i] = g_palettes[palette_idx][color_idx];
             } else {
-                dst[i] = c; 
+                dst[i] = c;
             }
         }
     }
@@ -516,46 +528,21 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
 
-    if (g_show_menu) {
-        ImGui::Begin("GameBoy Recompiled", &g_show_menu);
-        ImGui::Text("Performance: %.1f FPS", ImGui::GetIO().Framerate);
-        int scale_idx = g_scale - 1;
-        if (ImGui::Combo("Resolution", &scale_idx, g_scale_names, IM_ARRAYSIZE(g_scale_names))) {
-            g_scale = scale_idx + 1;
-            SDL_SetWindowSize(g_window, GB_SCREEN_WIDTH * g_scale, GB_SCREEN_HEIGHT * g_scale);
-            SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-        }
+    /* Draw menu system */
+    menu_gui_draw(g_ctx);
 
-        if (ImGui::Checkbox("V-Sync", &g_vsync)) {
-            SDL_RenderSetVSync(g_renderer, g_vsync ? 1 : 0);
-        }
+    /* Apply menu settings that affect SDL */
+    int new_scale = menu_gui_get_scale();
+    if (new_scale != g_scale) {
+        g_scale = new_scale;
+        SDL_SetWindowSize(g_window, GB_SCREEN_WIDTH * g_scale, GB_SCREEN_HEIGHT * g_scale);
+        SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    }
 
-        ImGui::SliderInt("Speed %", &g_speed_percent, 10, 500);
-        if (ImGui::Button("Reset Speed")) g_speed_percent = 100;
-        ImGui::Combo("Palette", &g_palette_idx, g_palette_names, IM_ARRAYSIZE(g_palette_names));
-
-        if (ImGui::Button("Reset to Defaults")) {
-            g_scale = 3;
-            g_speed_percent = 100;
-            SDL_SetWindowSize(g_window, GB_SCREEN_WIDTH * g_scale, GB_SCREEN_HEIGHT * g_scale);
-            SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-            g_palette_idx = 0;
-        }
-
-        if (ImGui::Button("Quit")) {
-            SDL_Event quit_event;
-            quit_event.type = SDL_QUIT;
-            SDL_PushEvent(&quit_event);
-        }
-        ImGui::End();
-    } else {
-        ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
-        ImGui::SetNextWindowBgAlpha(0.35f); 
-        if (ImGui::Begin("Overlay", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
-            ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
-            ImGui::Text("Press ESC for Menu");
-            ImGui::End();
-        }
+    bool new_vsync = menu_gui_get_vsync() != 0;
+    if (new_vsync != g_vsync) {
+        g_vsync = new_vsync;
+        SDL_RenderSetVSync(g_renderer, g_vsync ? 1 : 0);
     }
 
     ImGui::Render();
@@ -573,7 +560,8 @@ uint8_t gb_platform_get_joypad(void) {
 void gb_platform_vsync(void) {
     /* Target 59.7 FPS * Speed Multiplier */
     const uint32_t base_frame_time_ms = 16;
-    uint32_t scaled_frame_time = (base_frame_time_ms * 100) / (g_speed_percent > 0 ? g_speed_percent : 1);
+    int speed_pct = menu_gui_get_speed_percent();
+    uint32_t scaled_frame_time = (base_frame_time_ms * 100) / (speed_pct > 0 ? speed_pct : 1);
     
     uint32_t current_time = SDL_GetTicks();
     uint32_t elapsed = current_time - g_last_frame_time;
