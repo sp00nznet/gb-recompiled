@@ -673,30 +673,32 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
             
         case ir::Opcode::STORE8:
             if (instr.dst.type == ir::OperandType::IMM16) {
-                const char* src_name = get_reg8_name(instr.src.value.reg8);
-                if (src_name) {
-                    out << "gb_write8(ctx, 0x" << std::hex << std::setfill('0') 
-                        << std::setw(4) << instr.dst.value.imm16 << std::dec 
-                        << ", ctx->" << src_name << ");\n";
-                } else if (instr.src.type == ir::OperandType::IMM8) {
-                    out << "gb_write8(ctx, 0x" << std::hex << std::setfill('0') 
-                        << std::setw(4) << instr.dst.value.imm16 << std::dec 
+                /* Check src type FIRST to avoid union aliasing bug */
+                if (instr.src.type == ir::OperandType::IMM8) {
+                    out << "gb_write8(ctx, 0x" << std::hex << std::setfill('0')
+                        << std::setw(4) << instr.dst.value.imm16 << std::dec
                         << ", 0x" << std::setw(2) << (int)instr.src.value.imm8 << ");\n";
+                } else if (instr.src.type == ir::OperandType::REG8) {
+                    out << "gb_write8(ctx, 0x" << std::hex << std::setfill('0')
+                        << std::setw(4) << instr.dst.value.imm16 << std::dec
+                        << ", " << reg8_expr(instr.src.value.reg8) << ");\n";
                 } else {
-                    out << "gb_write8(ctx, 0x" << std::hex << std::setfill('0') 
-                        << std::setw(4) << instr.dst.value.imm16 << std::dec 
+                    out << "gb_write8(ctx, 0x" << std::hex << std::setfill('0')
+                        << std::setw(4) << instr.dst.value.imm16 << std::dec
                         << ", ctx->a);\n";
                 }
             } else if (instr.dst.type == ir::OperandType::REG16) {
-                const char* src_name = get_reg8_name(instr.src.value.reg8);
-                if (src_name) {
-                    out << "gb_write8(ctx, ctx->" << reg16_names[instr.dst.value.reg16] 
-                        << ", ctx->" << src_name << ");\n";
-                } else if (instr.src.type == ir::OperandType::IMM8) {
-                    out << "gb_write8(ctx, ctx->" << reg16_names[instr.dst.value.reg16] 
+                /* Check src type FIRST to avoid union aliasing bug:
+                 * For IMM8 operands, value.reg8 shares memory with value.imm8,
+                 * so get_reg8_name would incorrectly match immediates 0-5,7 */
+                if (instr.src.type == ir::OperandType::IMM8) {
+                    out << "gb_write8(ctx, ctx->" << reg16_names[instr.dst.value.reg16]
                         << ", 0x" << std::hex << std::setw(2) << (int)instr.src.value.imm8 << std::dec << ");\n";
+                } else if (instr.src.type == ir::OperandType::REG8) {
+                    out << "gb_write8(ctx, ctx->" << reg16_names[instr.dst.value.reg16]
+                        << ", " << reg8_expr(instr.src.value.reg8) << ");\n";
                 } else {
-                    out << "gb_write8(ctx, ctx->" << reg16_names[instr.dst.value.reg16] 
+                    out << "gb_write8(ctx, ctx->" << reg16_names[instr.dst.value.reg16]
                         << ", ctx->a);\n";
                 }
             }

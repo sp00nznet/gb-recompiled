@@ -90,12 +90,10 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
     /* Set PC to the address we want to execute */
     ctx->pc = addr;
 
-    /* Interpreter entry logging */
-    static int interp_entry_count = 0;
-    interp_entry_count++;
-    if (addr >= 0xC000 || interp_entry_count > 100000) {
-        fprintf(stderr, "[INTERP] Entry #%d addr=0x%04X bank=%d A=%02X SP=%04X HL=%04X\n",
-                interp_entry_count, addr, ctx->rom_bank, ctx->a, ctx->sp, ctx->hl);
+    /* Interpreter entry logging - only log WRAM/unusual entries */
+    if (addr >= 0xC000 && addr < 0xFE00) {
+        fprintf(stderr, "[INTERP] WRAM exec addr=0x%04X bank=%d A=%02X SP=%04X HL=%04X\n",
+                addr, ctx->rom_bank, ctx->a, ctx->sp, ctx->hl);
     }
     gbrt_log_trace(ctx, (addr < 0x4000) ? 0 : ctx->rom_bank, addr);
 
@@ -166,7 +164,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
         /* Guard: VRAM (0x8000-0x9FFF) is tile data, not executable code */
         if (ctx->pc >= 0x8000 && ctx->pc < 0xA000) {
             static int vram_count = 0;
-            if (vram_count++ < 5) {
+            if (vram_count++ < 2) {
                 fprintf(stderr, "[INTERP] CRASH: PC in VRAM at 0x%04X! SP=0x%04X "
                         "Stack: %04X %04X %04X %04X | A=%02X bank=%d\n",
                         ctx->pc, ctx->sp,
@@ -175,6 +173,8 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
                         (uint16_t)(gb_read8(ctx, ctx->sp+4) | (gb_read8(ctx, ctx->sp+5)<<8)),
                         (uint16_t)(gb_read8(ctx, ctx->sp+6) | (gb_read8(ctx, ctx->sp+7)<<8)),
                         ctx->a, ctx->rom_bank);
+                extern void gb_dump_dtrace(void);
+                gb_dump_dtrace();
             }
             return;
         }

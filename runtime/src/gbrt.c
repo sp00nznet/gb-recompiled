@@ -520,7 +520,15 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
                 }
             } else if (addr < 0x3000) {
                 /* ROM Bank Number (lower 8 bits) */
-                ctx->rom_bank = (ctx->rom_bank & 0x100) | value;
+                uint16_t new_bank = (ctx->rom_bank & 0x100) | value;
+                /* Mask to actual ROM size to prevent out-of-bounds reads */
+                uint16_t max_bank = (ctx->rom_size / 0x4000);
+                if (max_bank > 0 && new_bank >= max_bank) {
+                    fprintf(stderr, "[MBC5] Bank %d out of range (max %d), masking to %d. PC=%04X A=%02X value=%02X old_bank=%d\n",
+                            new_bank, max_bank - 1, new_bank % max_bank, ctx->pc, ctx->a, value, ctx->rom_bank);
+                    new_bank = new_bank % max_bank;
+                }
+                ctx->rom_bank = new_bank;
                 /* MBC5 allows bank 0 - no fixup needed */
             } else if (addr < 0x4000) {
                 /* ROM Bank Number (9th bit) */
@@ -1161,12 +1169,35 @@ uint32_t gb_run_frame(GBContext* ctx) {
     return ctx->cycles - start;
 }
 
+/* Dispatch trace ring buffer for crash debugging */
+#define DTRACE_SIZE 32
+static struct { uint16_t pc; uint8_t bank; uint8_t a; uint16_t sp; uint16_t hl; } g_dtrace[DTRACE_SIZE];
+static int g_dtrace_idx = 0;
+
+void gb_dump_dtrace(void) {
+    fprintf(stderr, "[DTRACE] Last %d dispatch entries:\n", DTRACE_SIZE);
+    for (int i = 0; i < DTRACE_SIZE; i++) {
+        int idx = (g_dtrace_idx + i) % DTRACE_SIZE;
+        fprintf(stderr, "  [%2d] PC=%04X bank=%d A=%02X SP=%04X HL=%04X\n",
+                i, g_dtrace[idx].pc, g_dtrace[idx].bank, g_dtrace[idx].a,
+                g_dtrace[idx].sp, g_dtrace[idx].hl);
+    }
+}
+
 uint32_t gb_step(GBContext* ctx) {
     if (gbrt_instruction_limit > 0 && ++gbrt_instruction_count >= gbrt_instruction_limit) {
         printf("Instruction limit reached (%llu)\n", (unsigned long long)gbrt_instruction_limit);
         exit(0);
     }
-    
+
+    /* Record dispatch trace */
+    g_dtrace[g_dtrace_idx].pc = ctx->pc;
+    g_dtrace[g_dtrace_idx].bank = ctx->rom_bank;
+    g_dtrace[g_dtrace_idx].a = ctx->a;
+    g_dtrace[g_dtrace_idx].sp = ctx->sp;
+    g_dtrace[g_dtrace_idx].hl = ctx->hl;
+    g_dtrace_idx = (g_dtrace_idx + 1) % DTRACE_SIZE;
+
     /* Handle HALT bug by falling back to interpreter for the next instruction */
     if (ctx->halt_bug) {
         gb_interpret(ctx, ctx->pc);
