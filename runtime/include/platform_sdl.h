@@ -63,6 +63,16 @@ void gb_platform_vsync(void);
  */
 void gb_platform_set_title(const char* title);
 
+/**
+ * @brief Save full program state to disk
+ */
+void gb_platform_save_state(GBContext* ctx);
+
+/**
+ * @brief Load full program state from disk
+ */
+void gb_platform_load_state(GBContext* ctx);
+
 #ifdef __cplusplus
 }
 #endif

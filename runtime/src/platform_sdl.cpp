@@ -374,6 +374,10 @@ bool gb_platform_poll_events(GBContext* ctx) {
                 menu_gui_toggle_settings();
             } else if (event.key.keysym.scancode == SDL_SCANCODE_F2) {
                 menu_gui_toggle_debug();
+            } else if (event.key.keysym.scancode == SDL_SCANCODE_F5) {
+                gb_platform_save_state(ctx);
+            } else if (event.key.keysym.scancode == SDL_SCANCODE_F7) {
+                gb_platform_load_state(ctx);
             }
         }
 
@@ -521,10 +525,9 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
                   g_frame_count, has_content, framebuffer[0]);
     }
     
-    if (g_frame_count % 60 == 0) {
-        char title[64];
-        snprintf(title, sizeof(title), "Link's Awakening Recompiled - Frame %d", g_frame_count);
-        SDL_SetWindowTitle(g_window, title);
+    /* Auto-save ERAM every ~5 seconds (300 frames at 60fps) */
+    if (g_ctx && g_frame_count % 300 == 0) {
+        gb_context_save_ram(g_ctx);
     }
     
     /* Update texture */
@@ -585,6 +588,16 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         SDL_RenderSetVSync(g_renderer, g_vsync ? 1 : 0);
     }
 
+    /* Handle save state requests from menu */
+    if (menu_gui_save_state_requested()) {
+        gb_platform_save_state(g_ctx);
+        menu_gui_clear_save_state_request();
+    }
+    if (menu_gui_load_state_requested()) {
+        gb_platform_load_state(g_ctx);
+        menu_gui_clear_load_state_request();
+    }
+
     ImGui::Render();
     ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), g_renderer);
 
@@ -620,7 +633,192 @@ void gb_platform_set_title(const char* title) {
 }
 
 /* ============================================================================
- * Save Data
+ * Save States (full program state snapshot)
+ * ========================================================================== */
+
+#define SAVE_STATE_MAGIC 0x4C415353  /* "LASS" - LA Save State */
+#define SAVE_STATE_VERSION 1
+
+/* Memory sizes (must match gbrt.c allocations) */
+#define SS_WRAM_SIZE   (0x1000 * 8)   /* 8 WRAM banks */
+#define SS_VRAM_SIZE   (0x2000 * 2)   /* 2 VRAM banks */
+#define SS_OAM_SIZE    0xA0
+#define SS_HRAM_SIZE   0x7F
+#define SS_IO_SIZE     0x81
+
+static void get_state_path(char* buf, size_t size) {
+    char* base = SDL_GetBasePath();
+    if (base) {
+        snprintf(buf, size, "%ssavestate.bin", base);
+        SDL_free(base);
+    } else {
+        snprintf(buf, size, "savestate.bin");
+    }
+}
+
+void gb_platform_save_state(GBContext* ctx) {
+    if (!ctx) return;
+
+    char path[512];
+    get_state_path(path, sizeof(path));
+
+    FILE* f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "[STATE] Failed to open %s for writing\n", path);
+        return;
+    }
+
+    /* Header */
+    uint32_t magic = SAVE_STATE_MAGIC;
+    uint32_t version = SAVE_STATE_VERSION;
+    fwrite(&magic, 4, 1, f);
+    fwrite(&version, 4, 1, f);
+
+    /* CPU registers and state (fixed-size portion of GBContext) */
+    /* Write everything from af through to last_joypad — the scalar fields */
+    fwrite(&ctx->af, sizeof(uint16_t), 1, f);
+    fwrite(&ctx->bc, sizeof(uint16_t), 1, f);
+    fwrite(&ctx->de, sizeof(uint16_t), 1, f);
+    fwrite(&ctx->hl, sizeof(uint16_t), 1, f);
+    fwrite(&ctx->sp, sizeof(uint16_t), 1, f);
+    fwrite(&ctx->pc, sizeof(uint16_t), 1, f);
+    fwrite(&ctx->f_z, 1, 1, f);
+    fwrite(&ctx->f_n, 1, 1, f);
+    fwrite(&ctx->f_h, 1, 1, f);
+    fwrite(&ctx->f_c, 1, 1, f);
+    fwrite(&ctx->ime, 1, 1, f);
+    fwrite(&ctx->ime_pending, 1, 1, f);
+    fwrite(&ctx->halted, 1, 1, f);
+    fwrite(&ctx->stopped, 1, 1, f);
+    fwrite(&ctx->halt_bug, 1, 1, f);
+    fwrite(&ctx->speed_switch_halt, sizeof(int32_t), 1, f);
+    fwrite(&ctx->dma, sizeof(ctx->dma), 1, f);
+    fwrite(&ctx->rom_bank, sizeof(uint16_t), 1, f);
+    fwrite(&ctx->ram_bank, 1, 1, f);
+    fwrite(&ctx->wram_bank, 1, 1, f);
+    fwrite(&ctx->vram_bank, 1, 1, f);
+    fwrite(&ctx->mbc_type, 1, 1, f);
+    fwrite(&ctx->ram_enabled, 1, 1, f);
+    fwrite(&ctx->mbc_mode, 1, 1, f);
+    fwrite(&ctx->rom_bank_upper, 1, 1, f);
+    fwrite(&ctx->rtc_mode, 1, 1, f);
+    fwrite(&ctx->rtc_reg, 1, 1, f);
+    fwrite(&ctx->cycles, sizeof(uint32_t), 1, f);
+    fwrite(&ctx->frame_cycles, sizeof(uint32_t), 1, f);
+    fwrite(&ctx->last_sync_cycles, sizeof(uint32_t), 1, f);
+    fwrite(&ctx->frame_done, 1, 1, f);
+    fwrite(&ctx->div_counter, sizeof(uint16_t), 1, f);
+    fwrite(&ctx->last_joypad, 1, 1, f);
+
+    /* Memory regions */
+    if (ctx->wram)  fwrite(ctx->wram, 1, SS_WRAM_SIZE, f);
+    if (ctx->vram)  fwrite(ctx->vram, 1, SS_VRAM_SIZE, f);
+    if (ctx->oam)   fwrite(ctx->oam,  1, SS_OAM_SIZE, f);
+    if (ctx->hram)  fwrite(ctx->hram, 1, SS_HRAM_SIZE, f);
+    if (ctx->io)    fwrite(ctx->io,   1, SS_IO_SIZE, f);
+
+    /* External RAM */
+    uint32_t eram_sz = (uint32_t)ctx->eram_size;
+    fwrite(&eram_sz, 4, 1, f);
+    if (ctx->eram && eram_sz > 0)
+        fwrite(ctx->eram, 1, eram_sz, f);
+
+    /* PPU state */
+    if (ctx->ppu) {
+        uint8_t has_ppu = 1;
+        fwrite(&has_ppu, 1, 1, f);
+        fwrite(ctx->ppu, sizeof(GBPPU), 1, f);
+    } else {
+        uint8_t has_ppu = 0;
+        fwrite(&has_ppu, 1, 1, f);
+    }
+
+    fclose(f);
+    fprintf(stderr, "[STATE] Save state written to %s\n", path);
+}
+
+void gb_platform_load_state(GBContext* ctx) {
+    if (!ctx) return;
+
+    char path[512];
+    get_state_path(path, sizeof(path));
+
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "[STATE] No save state found at %s\n", path);
+        return;
+    }
+
+    /* Verify header */
+    uint32_t magic = 0, version = 0;
+    fread(&magic, 4, 1, f);
+    fread(&version, 4, 1, f);
+    if (magic != SAVE_STATE_MAGIC || version != SAVE_STATE_VERSION) {
+        fprintf(stderr, "[STATE] Invalid save state (magic=%08X ver=%u)\n", magic, version);
+        fclose(f);
+        return;
+    }
+
+    /* CPU registers and state */
+    fread(&ctx->af, sizeof(uint16_t), 1, f);
+    fread(&ctx->bc, sizeof(uint16_t), 1, f);
+    fread(&ctx->de, sizeof(uint16_t), 1, f);
+    fread(&ctx->hl, sizeof(uint16_t), 1, f);
+    fread(&ctx->sp, sizeof(uint16_t), 1, f);
+    fread(&ctx->pc, sizeof(uint16_t), 1, f);
+    fread(&ctx->f_z, 1, 1, f);
+    fread(&ctx->f_n, 1, 1, f);
+    fread(&ctx->f_h, 1, 1, f);
+    fread(&ctx->f_c, 1, 1, f);
+    fread(&ctx->ime, 1, 1, f);
+    fread(&ctx->ime_pending, 1, 1, f);
+    fread(&ctx->halted, 1, 1, f);
+    fread(&ctx->stopped, 1, 1, f);
+    fread(&ctx->halt_bug, 1, 1, f);
+    fread(&ctx->speed_switch_halt, sizeof(int32_t), 1, f);
+    fread(&ctx->dma, sizeof(ctx->dma), 1, f);
+    fread(&ctx->rom_bank, sizeof(uint16_t), 1, f);
+    fread(&ctx->ram_bank, 1, 1, f);
+    fread(&ctx->wram_bank, 1, 1, f);
+    fread(&ctx->vram_bank, 1, 1, f);
+    fread(&ctx->mbc_type, 1, 1, f);
+    fread(&ctx->ram_enabled, 1, 1, f);
+    fread(&ctx->mbc_mode, 1, 1, f);
+    fread(&ctx->rom_bank_upper, 1, 1, f);
+    fread(&ctx->rtc_mode, 1, 1, f);
+    fread(&ctx->rtc_reg, 1, 1, f);
+    fread(&ctx->cycles, sizeof(uint32_t), 1, f);
+    fread(&ctx->frame_cycles, sizeof(uint32_t), 1, f);
+    fread(&ctx->last_sync_cycles, sizeof(uint32_t), 1, f);
+    fread(&ctx->frame_done, 1, 1, f);
+    fread(&ctx->div_counter, sizeof(uint16_t), 1, f);
+    fread(&ctx->last_joypad, 1, 1, f);
+
+    /* Memory regions */
+    if (ctx->wram)  fread(ctx->wram, 1, SS_WRAM_SIZE, f);
+    if (ctx->vram)  fread(ctx->vram, 1, SS_VRAM_SIZE, f);
+    if (ctx->oam)   fread(ctx->oam,  1, SS_OAM_SIZE, f);
+    if (ctx->hram)  fread(ctx->hram, 1, SS_HRAM_SIZE, f);
+    if (ctx->io)    fread(ctx->io,   1, SS_IO_SIZE, f);
+
+    /* External RAM */
+    uint32_t eram_sz = 0;
+    fread(&eram_sz, 4, 1, f);
+    if (ctx->eram && eram_sz > 0 && eram_sz <= ctx->eram_size)
+        fread(ctx->eram, 1, eram_sz, f);
+
+    /* PPU state */
+    uint8_t has_ppu = 0;
+    fread(&has_ppu, 1, 1, f);
+    if (has_ppu && ctx->ppu)
+        fread(ctx->ppu, sizeof(GBPPU), 1, f);
+
+    fclose(f);
+    fprintf(stderr, "[STATE] Save state loaded from %s\n", path);
+}
+
+/* ============================================================================
+ * Save Data (battery-backed SRAM)
  * ========================================================================== */
 
 static void sdl_get_save_path(char* buffer, size_t size, const char* rom_name) {

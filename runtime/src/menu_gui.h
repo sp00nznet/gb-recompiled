@@ -82,6 +82,12 @@ void menu_gui_load_bindings(void);
 /* Get analog stick deadzone (0.0-1.0) */
 float menu_gui_get_deadzone(void);
 
+/* Save state request flags (set by menu, consumed by platform) */
+int  menu_gui_save_state_requested(void);
+int  menu_gui_load_state_requested(void);
+void menu_gui_clear_save_state_request(void);
+void menu_gui_clear_load_state_request(void);
+
 #ifdef __cplusplus
 }
 #endif

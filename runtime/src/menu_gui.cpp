@@ -54,6 +54,10 @@ static struct {
     bool  unlimited_arrows;
     bool  unlimited_powder;
 
+    /* Save state requests */
+    bool  save_state_requested;
+    bool  load_state_requested;
+
 } g_menu = {
     false,
     /* Windows */
@@ -66,6 +70,8 @@ static struct {
     100, false,
     /* Cheats */
     false, false, false, false, false,
+    /* Save state */
+    false, false,
 };
 
 /* ================================================================
@@ -289,11 +295,11 @@ static void draw_menu_bar(GBContext* ctx)
     if (ImGui::BeginMainMenuBar()) {
         /* ---- File ---- */
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Save Game")) {
-                if (ctx) {
-                    gb_context_save_ram(ctx);
-                    fprintf(stderr, "[MENU] Game saved\n");
-                }
+            if (ImGui::MenuItem("Save State", "F5")) {
+                g_menu.save_state_requested = true;
+            }
+            if (ImGui::MenuItem("Load State", "F7")) {
+                g_menu.load_state_requested = true;
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Quit")) {
@@ -842,3 +848,8 @@ extern "C" float menu_gui_get_master_volume(void)
     if (g_menu.mute) return 0.0f;
     return g_menu.master_volume;
 }
+
+extern "C" int  menu_gui_save_state_requested(void) { return g_menu.save_state_requested ? 1 : 0; }
+extern "C" int  menu_gui_load_state_requested(void) { return g_menu.load_state_requested ? 1 : 0; }
+extern "C" void menu_gui_clear_save_state_request(void) { g_menu.save_state_requested = false; }
+extern "C" void menu_gui_clear_load_state_request(void) { g_menu.load_state_requested = false; }
