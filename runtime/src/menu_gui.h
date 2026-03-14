@@ -42,6 +42,46 @@ int   menu_gui_get_show_fps(void);
 /* Signal quit requested */
 int   menu_gui_quit_requested(void);
 
+/* ---- Input binding system ---- */
+
+/* Game Boy buttons (used as indices into binding arrays) */
+enum {
+    GB_BTN_UP = 0,
+    GB_BTN_DOWN,
+    GB_BTN_LEFT,
+    GB_BTN_RIGHT,
+    GB_BTN_A,
+    GB_BTN_B,
+    GB_BTN_SELECT,
+    GB_BTN_START,
+    GB_BTN_COUNT
+};
+
+/* Key binding: two keyboard scancodes per button */
+typedef struct {
+    int key0;  /* SDL_Scancode, -1 = unset */
+    int key1;  /* SDL_Scancode, -1 = unset */
+} KeyBind;
+
+/* Gamepad binding: SDL_GameControllerButton or axis, -1 = unset */
+typedef struct {
+    int button;    /* SDL_GameControllerButton (primary), -1 = unset */
+    int button1;   /* SDL_GameControllerButton (alt), -1 = unset */
+    int axis;      /* SDL_GameControllerAxis, -1 = unset */
+    int axis_dir;  /* +1 or -1 for axis direction */
+} PadBind;
+
+/* Get current bindings (array of GB_BTN_COUNT) */
+const KeyBind* menu_gui_get_key_binds(void);
+const PadBind* menu_gui_get_pad_binds(void);
+
+/* Save/load bindings to/from config file */
+void menu_gui_save_bindings(void);
+void menu_gui_load_bindings(void);
+
+/* Get analog stick deadzone (0.0-1.0) */
+float menu_gui_get_deadzone(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -42,6 +42,9 @@ uint8_t g_joypad_dpad = 0xFF;     /* Active low: Down, Up, Left, Right */
 /* Stored context for menu access */
 static GBContext* g_ctx = NULL;
 
+/* Gamepad */
+static SDL_GameController* g_gamepad = NULL;
+
 /* ============================================================================
  * Automation State
  * ========================================================================== */
@@ -157,6 +160,10 @@ static int g_frame_count = 0;
  * ========================================================================== */
 
 void gb_platform_shutdown(void) {
+    if (g_gamepad) {
+        SDL_GameControllerClose(g_gamepad);
+        g_gamepad = NULL;
+    }
     if (g_audio_device) {
         SDL_CloseAudioDevice(g_audio_device);
         g_audio_device = 0;
@@ -322,124 +329,157 @@ bool gb_platform_init(int scale) {
     return true;
 }
 
+/* Bit masks for each GB button in joypad registers.
+ * D-pad buttons live in g_joypad_dpad, face buttons in g_joypad_buttons.
+ * Active low: 0 = pressed, 1 = released. */
+static const uint8_t gb_btn_dpad_mask[GB_BTN_COUNT] = {
+    0x04, 0x08, 0x02, 0x01,  /* Up, Down, Left, Right */
+    0, 0, 0, 0               /* A, B, Select, Start → buttons register */
+};
+static const uint8_t gb_btn_buttons_mask[GB_BTN_COUNT] = {
+    0, 0, 0, 0,              /* Up, Down, Left, Right → dpad register */
+    0x01, 0x02, 0x04, 0x08   /* A, B, Select, Start */
+};
+
 bool gb_platform_poll_events(GBContext* ctx) {
-    g_ctx = ctx;  /* Store for menu access */
+    g_ctx = ctx;
 
     if (menu_gui_quit_requested()) return false;
 
+    /* ---- Open gamepad if needed ---- */
+    if (!g_gamepad) {
+        for (int i = 0; i < SDL_NumJoysticks(); i++) {
+            if (SDL_IsGameController(i)) {
+                g_gamepad = SDL_GameControllerOpen(i);
+                if (g_gamepad) {
+                    fprintf(stderr, "[SDL] Gamepad opened: %s\n", SDL_GameControllerName(g_gamepad));
+                    break;
+                }
+            }
+        }
+    }
+
+    /* ---- Process SDL events (for ImGui, window, hotplug) ---- */
     SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        ImGui_ImplSDL2_ProcessEvent(&event);
+        if (event.type == SDL_QUIT) return false;
+        if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE
+            && event.window.windowID == SDL_GetWindowID(g_window))
+            return false;
+
+        /* Special keys — handled as events so they trigger once */
+        if (event.type == SDL_KEYDOWN) {
+            if (event.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
+                menu_gui_toggle_settings();
+            } else if (event.key.keysym.scancode == SDL_SCANCODE_F2) {
+                menu_gui_toggle_debug();
+            }
+        }
+
+        /* Gamepad hotplug */
+        if (event.type == SDL_CONTROLLERDEVICEADDED && !g_gamepad) {
+            int idx = event.cdevice.which;
+            if (SDL_IsGameController(idx)) {
+                g_gamepad = SDL_GameControllerOpen(idx);
+                if (g_gamepad)
+                    fprintf(stderr, "[SDL] Gamepad connected: %s\n", SDL_GameControllerName(g_gamepad));
+            }
+        }
+        if (event.type == SDL_CONTROLLERDEVICEREMOVED && g_gamepad
+            && event.cdevice.which == SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(g_gamepad))) {
+            fprintf(stderr, "[SDL] Gamepad disconnected\n");
+            SDL_GameControllerClose(g_gamepad);
+            g_gamepad = NULL;
+        }
+    }
+
+    /* ================================================================
+     * POLL-BASED INPUT: rebuild joypad state from scratch every frame.
+     * This eliminates stiffness from event ordering conflicts between
+     * d-pad buttons, analog stick, and keyboard.
+     * ================================================================ */
+
     uint8_t joyp = ctx ? ctx->io[0x00] : 0xFF;
     bool dpad_selected = !(joyp & 0x10);
     bool buttons_selected = !(joyp & 0x20);
-    
-    while (SDL_PollEvent(&event)) {
-         ImGui_ImplSDL2_ProcessEvent(&event);
-         if (event.type == SDL_QUIT) return false;
-         if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE && event.window.windowID == SDL_GetWindowID(g_window))
-            return false;
 
-        switch (event.type) {
-            case SDL_KEYDOWN:
-            case SDL_KEYUP: {
-                bool pressed = (event.type == SDL_KEYDOWN);
-                bool trigger = false;
-                
-                switch (event.key.keysym.scancode) {
-                    /* D-pad */
-                    case SDL_SCANCODE_UP:
-                    case SDL_SCANCODE_W:
-                        if (pressed) { g_joypad_dpad &= ~0x04; if (dpad_selected) trigger = true; }
-                        else g_joypad_dpad |= 0x04;
-                        break;
-                    case SDL_SCANCODE_DOWN:
-                    case SDL_SCANCODE_S:
-                        if (pressed) { g_joypad_dpad &= ~0x08; if (dpad_selected) trigger = true; }
-                        else g_joypad_dpad |= 0x08;
-                        break;
-                    case SDL_SCANCODE_LEFT:
-                    case SDL_SCANCODE_A:
-                        if (pressed) { g_joypad_dpad &= ~0x02; if (dpad_selected) trigger = true; }
-                        else g_joypad_dpad |= 0x02;
-                        break;
-                    case SDL_SCANCODE_RIGHT:
-                    case SDL_SCANCODE_D:
-                        if (pressed) { g_joypad_dpad &= ~0x01; if (dpad_selected) trigger = true; }
-                        else g_joypad_dpad |= 0x01;
-                        break;
-                    
-                    /* Buttons */
-                    case SDL_SCANCODE_Z:
-                    case SDL_SCANCODE_J:
-                        if (pressed) { g_joypad_buttons &= ~0x01; if (buttons_selected) trigger = true; } /* A */
-                        else g_joypad_buttons |= 0x01;
-                        break;
-                    case SDL_SCANCODE_X:
-                    case SDL_SCANCODE_K:
-                        if (pressed) { g_joypad_buttons &= ~0x02; if (buttons_selected) trigger = true; } /* B */
-                        else g_joypad_buttons |= 0x02;
-                        break;
-                    case SDL_SCANCODE_RSHIFT:
-                    case SDL_SCANCODE_BACKSPACE:
-                        if (pressed) { g_joypad_buttons &= ~0x04; if (buttons_selected) trigger = true; } /* Select */
-                        else g_joypad_buttons |= 0x04;
-                        break;
-                    case SDL_SCANCODE_RETURN:
-                        if (pressed) { g_joypad_buttons &= ~0x08; if (buttons_selected) trigger = true; } /* Start */
-                        else g_joypad_buttons |= 0x08;
-                        break;
-                    
-                    case SDL_SCANCODE_ESCAPE:
-                        if (pressed) {
-                            menu_gui_toggle_settings();
-                        }
-                        return true;
+    /* Save old state to detect new presses for interrupt */
+    uint8_t old_dpad = g_joypad_dpad;
+    uint8_t old_buttons = g_joypad_buttons;
 
-                    case SDL_SCANCODE_F2:
-                        if (pressed) {
-                            menu_gui_toggle_debug();
-                        }
-                        return true;
+    /* Start with all released */
+    g_joypad_dpad = 0xFF;
+    g_joypad_buttons = 0xFF;
 
-                    default:
-                        break;
-                }
-                
-                if (trigger && ctx && event.key.repeat == 0) {
-                    ctx->io[0x0F] |= 0x10; /* Request Joypad Interrupt */
-                    /* Also wake up HALT state immediately if needed, though handle_interrupts does it */
-                    if (ctx->halted) ctx->halted = 0;
-                }
-                break;
-            }
-            
-            case SDL_WINDOWEVENT:
-                if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
-                    /* Handle resize if needed or just let SDL/ImGui handle it */
-                }
-                break;
+    /* ---- Keyboard (poll) ---- */
+    const Uint8* kbstate = SDL_GetKeyboardState(NULL);
+    const KeyBind* kb = menu_gui_get_key_binds();
+
+    for (int i = 0; i < GB_BTN_COUNT; i++) {
+        bool held = false;
+        if (kb[i].key0 >= 0 && kbstate[kb[i].key0]) held = true;
+        if (kb[i].key1 >= 0 && kbstate[kb[i].key1]) held = true;
+
+        if (held) {
+            g_joypad_dpad    &= ~gb_btn_dpad_mask[i];
+            g_joypad_buttons &= ~gb_btn_buttons_mask[i];
         }
     }
-    
-    /* Handle Automation Inputs */
+
+    /* ---- Gamepad (poll buttons + axes) ---- */
+    if (g_gamepad) {
+        const PadBind* pb = menu_gui_get_pad_binds();
+        float dz = menu_gui_get_deadzone();
+        int16_t dz_val = (int16_t)(dz * 32767);
+
+        for (int i = 0; i < GB_BTN_COUNT; i++) {
+            bool held = false;
+
+            /* Primary button */
+            if (pb[i].button >= 0 &&
+                SDL_GameControllerGetButton(g_gamepad, (SDL_GameControllerButton)pb[i].button))
+                held = true;
+
+            /* Alt button */
+            if (pb[i].button1 >= 0 &&
+                SDL_GameControllerGetButton(g_gamepad, (SDL_GameControllerButton)pb[i].button1))
+                held = true;
+
+            /* Axis */
+            if (pb[i].axis >= 0) {
+                int16_t val = SDL_GameControllerGetAxis(g_gamepad, (SDL_GameControllerAxis)pb[i].axis);
+                if (pb[i].axis_dir > 0 ? (val > dz_val) : (val < -dz_val))
+                    held = true;
+            }
+
+            if (held) {
+                g_joypad_dpad    &= ~gb_btn_dpad_mask[i];
+                g_joypad_buttons &= ~gb_btn_buttons_mask[i];
+            }
+        }
+    }
+
+    /* ---- Automation script inputs ---- */
     for (int i = 0; i < g_script_count; i++) {
         ScriptEntry* e = &g_input_script[i];
-        if (g_frame_count >= e->start_frame && g_frame_count < (e->start_frame + e->duration)) {
-             // Apply inputs (ANDing masks)
-             g_joypad_dpad &= e->dpad;
-             g_joypad_buttons &= e->buttons;
-             
-             // Check triggers
-             bool trigger = false;
-             if ((~e->dpad & 0x0F) && dpad_selected) trigger = true;
-             if ((~e->buttons & 0x0F) && buttons_selected) trigger = true;
-             
-                if (trigger && ctx) {
-                    /* Only trigger on initial press, not repeats or continuous hold */
-                     if (g_frame_count == e->start_frame) {
-                        ctx->io[0x0F] |= 0x10;
-                        if (ctx->halted) ctx->halted = 0;
-                     }
-                }
+        if (g_frame_count >= (int)e->start_frame && g_frame_count < (int)(e->start_frame + e->duration)) {
+            g_joypad_dpad &= e->dpad;
+            g_joypad_buttons &= e->buttons;
+        }
+    }
+
+    /* ---- Fire joypad interrupt on new presses ---- */
+    if (ctx) {
+        /* Detect newly pressed bits (went from 1→0, active low) */
+        uint8_t new_dpad_presses = old_dpad & ~g_joypad_dpad;
+        uint8_t new_btn_presses  = old_buttons & ~g_joypad_buttons;
+
+        bool trigger = (new_dpad_presses && dpad_selected) ||
+                       (new_btn_presses && buttons_selected);
+        if (trigger) {
+            ctx->io[0x0F] |= 0x10;
+            if (ctx->halted) ctx->halted = 0;
         }
     }
 

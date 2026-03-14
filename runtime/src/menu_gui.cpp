@@ -7,8 +7,10 @@
  */
 
 #include "imgui.h"
+#include <SDL.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 extern "C" {
 #include "menu_gui.h"
@@ -61,10 +63,132 @@ static struct {
     /* Sound */
     1.0f, false, true, true, true, true,
     /* Speed */
-    100, true,
+    100, false,
     /* Cheats */
     false, false, false, false, false,
 };
+
+/* ================================================================
+ * Input binding state
+ * ================================================================ */
+
+static const char* gb_btn_names[GB_BTN_COUNT] = {
+    "Up", "Down", "Left", "Right", "A", "B", "Select", "Start"
+};
+
+/* Default keyboard bindings */
+static KeyBind g_key_binds[GB_BTN_COUNT] = {
+    { SDL_SCANCODE_UP,     SDL_SCANCODE_W },         /* Up */
+    { SDL_SCANCODE_DOWN,   SDL_SCANCODE_S },         /* Down */
+    { SDL_SCANCODE_LEFT,   SDL_SCANCODE_A },         /* Left */
+    { SDL_SCANCODE_RIGHT,  SDL_SCANCODE_D },         /* Right */
+    { SDL_SCANCODE_Z,      SDL_SCANCODE_J },         /* A */
+    { SDL_SCANCODE_X,      SDL_SCANCODE_K },         /* B */
+    { SDL_SCANCODE_RSHIFT, SDL_SCANCODE_BACKSPACE }, /* Select */
+    { SDL_SCANCODE_RETURN, -1 },                     /* Start */
+};
+
+/* Default gamepad bindings */
+static PadBind g_pad_binds[GB_BTN_COUNT] = {
+    { SDL_CONTROLLER_BUTTON_DPAD_UP,    -1, SDL_CONTROLLER_AXIS_LEFTY, -1 }, /* Up */
+    { SDL_CONTROLLER_BUTTON_DPAD_DOWN,  -1, SDL_CONTROLLER_AXIS_LEFTY, +1 }, /* Down */
+    { SDL_CONTROLLER_BUTTON_DPAD_LEFT,  -1, SDL_CONTROLLER_AXIS_LEFTX, -1 }, /* Left */
+    { SDL_CONTROLLER_BUTTON_DPAD_RIGHT, -1, SDL_CONTROLLER_AXIS_LEFTX, +1 }, /* Right */
+    { SDL_CONTROLLER_BUTTON_A,          -1, -1, 0 },                         /* A */
+    { SDL_CONTROLLER_BUTTON_B,          -1, -1, 0 },                         /* B */
+    { SDL_CONTROLLER_BUTTON_BACK,       SDL_CONTROLLER_BUTTON_X, -1, 0 },    /* Select (+ X) */
+    { SDL_CONTROLLER_BUTTON_START,      SDL_CONTROLLER_BUTTON_Y, -1, 0 },    /* Start  (+ Y) */
+};
+
+static float g_deadzone = 0.2f;
+
+/* Rebinding state */
+static int g_rebind_btn = -1;       /* Which GB button we're rebinding, -1 = none */
+static int g_rebind_slot = 0;       /* 0 = key0, 1 = key1, 2 = pad button */
+static bool g_rebind_is_pad = false;
+
+static const char* scancode_name(int sc) {
+    if (sc < 0) return "---";
+    const char* name = SDL_GetScancodeName((SDL_Scancode)sc);
+    return (name && name[0]) ? name : "???";
+}
+
+static const char* pad_button_name(int btn) {
+    if (btn < 0) return "---";
+    static const char* names[] = {
+        "A/Cross", "B/Circle", "X/Square", "Y/Triangle",
+        "Back/Share", "Guide", "Start/Options",
+        "L-Stick", "R-Stick", "LB/L1", "RB/R1",
+        "D-Up", "D-Down", "D-Left", "D-Right",
+        "Misc1", "Paddle1", "Paddle2", "Paddle3", "Paddle4", "Touchpad"
+    };
+    if (btn >= 0 && btn < (int)(sizeof(names)/sizeof(names[0])))
+        return names[btn];
+    return "???";
+}
+
+static const char* pad_axis_name(int axis, int dir) {
+    if (axis < 0) return "---";
+    static char buf[32];
+    const char* axis_names[] = { "L-X", "L-Y", "R-X", "R-Y", "L-Trig", "R-Trig" };
+    const char* an = (axis >= 0 && axis < 6) ? axis_names[axis] : "?";
+    snprintf(buf, sizeof(buf), "%s %s", an, dir > 0 ? "+" : "-");
+    return buf;
+}
+
+/* Config file path */
+static void get_config_path(char* buf, size_t size) {
+    char* base = SDL_GetBasePath();
+    if (base) {
+        snprintf(buf, size, "%sbindings.cfg", base);
+        SDL_free(base);
+    } else {
+        snprintf(buf, size, "bindings.cfg");
+    }
+}
+
+extern "C" void menu_gui_save_bindings(void) {
+    char path[512];
+    get_config_path(path, sizeof(path));
+    FILE* f = fopen(path, "w");
+    if (!f) return;
+    for (int i = 0; i < GB_BTN_COUNT; i++) {
+        fprintf(f, "key %d %d %d\n", i, g_key_binds[i].key0, g_key_binds[i].key1);
+        fprintf(f, "pad %d %d %d %d %d\n", i, g_pad_binds[i].button, g_pad_binds[i].button1, g_pad_binds[i].axis, g_pad_binds[i].axis_dir);
+    }
+    fprintf(f, "deadzone %f\n", g_deadzone);
+    fclose(f);
+    fprintf(stderr, "[MENU] Bindings saved to %s\n", path);
+}
+
+extern "C" void menu_gui_load_bindings(void) {
+    char path[512];
+    get_config_path(path, sizeof(path));
+    FILE* f = fopen(path, "r");
+    if (!f) return;
+    char line[128];
+    while (fgets(line, sizeof(line), f)) {
+        int idx, v0, v1, v2, v3;
+        float dz;
+        if (sscanf(line, "key %d %d %d", &idx, &v0, &v1) == 3 && idx >= 0 && idx < GB_BTN_COUNT) {
+            g_key_binds[idx].key0 = v0;
+            g_key_binds[idx].key1 = v1;
+        } else if (sscanf(line, "pad %d %d %d %d %d", &idx, &v0, &v1, &v2, &v3) == 5 && idx >= 0 && idx < GB_BTN_COUNT) {
+            g_pad_binds[idx].button = v0;
+            g_pad_binds[idx].button1 = v1;
+            g_pad_binds[idx].axis = v2;
+            g_pad_binds[idx].axis_dir = v3;
+        } else if (sscanf(line, "deadzone %f", &dz) == 1) {
+            g_deadzone = dz;
+        }
+    }
+    fclose(f);
+    fprintf(stderr, "[MENU] Bindings loaded from %s\n", path);
+}
+
+extern "C" const KeyBind* menu_gui_get_key_binds(void) { return g_key_binds; }
+extern "C" const PadBind* menu_gui_get_pad_binds(void) { return g_pad_binds; }
+extern "C" float menu_gui_get_deadzone(void) { return g_deadzone; }
 
 /* ================================================================
  * Color theme (xemu-inspired dark green)
@@ -241,7 +365,7 @@ static void draw_menu_bar(GBContext* ctx)
 
         /* ---- Controller ---- */
         if (ImGui::BeginMenu("Controller")) {
-            ImGui::MenuItem("Show Key Bindings", NULL, &g_menu.show_controller);
+            ImGui::MenuItem("Controller Settings", NULL, &g_menu.show_controller);
             ImGui::EndMenu();
         }
 
@@ -410,30 +534,223 @@ static void draw_debug_window(GBContext* ctx)
 
 static void draw_controller_window(void)
 {
-    ImGui::SetNextWindowSize(ImVec2(340, 300), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Key Bindings", &g_menu.show_controller)) {
-        ImGui::Text("Keyboard");
+    ImGui::SetNextWindowSize(ImVec2(480, 460), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Controller Settings", &g_menu.show_controller)) {
+
+        /* ---- Rebind listening popup ---- */
+        if (g_rebind_btn >= 0) {
+            ImGui::OpenPopup("Rebind");
+        }
+        if (ImGui::BeginPopupModal("Rebind", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+            ImGui::Text("Press a %s for \"%s\"...",
+                g_rebind_is_pad ? "button/axis" : "key",
+                gb_btn_names[g_rebind_btn]);
+            ImGui::Text("(ESC to cancel, Delete to clear)");
+
+            if (!g_rebind_is_pad) {
+                /* Listen for keyboard */
+                for (int sc = 0; sc < SDL_NUM_SCANCODES; sc++) {
+                    if (ImGui::IsKeyPressed((ImGuiKey)SDL_SCANCODE_TO_KEYCODE(sc), false))
+                        continue; /* ImGui key mapping doesn't work this way, use SDL below */
+                }
+                /* Poll SDL keyboard state directly */
+                const Uint8* state = SDL_GetKeyboardState(NULL);
+                if (state[SDL_SCANCODE_ESCAPE]) {
+                    g_rebind_btn = -1;
+                    ImGui::CloseCurrentPopup();
+                } else if (state[SDL_SCANCODE_DELETE]) {
+                    if (g_rebind_slot == 0)
+                        g_key_binds[g_rebind_btn].key0 = -1;
+                    else
+                        g_key_binds[g_rebind_btn].key1 = -1;
+                    g_rebind_btn = -1;
+                    ImGui::CloseCurrentPopup();
+                } else {
+                    for (int sc = 0; sc < SDL_NUM_SCANCODES; sc++) {
+                        if (sc == SDL_SCANCODE_ESCAPE || sc == SDL_SCANCODE_DELETE) continue;
+                        if (state[sc]) {
+                            if (g_rebind_slot == 0)
+                                g_key_binds[g_rebind_btn].key0 = sc;
+                            else
+                                g_key_binds[g_rebind_btn].key1 = sc;
+                            g_rebind_btn = -1;
+                            ImGui::CloseCurrentPopup();
+                            break;
+                        }
+                    }
+                }
+            } else {
+                /* Listen for gamepad */
+                const Uint8* kbstate = SDL_GetKeyboardState(NULL);
+                if (kbstate[SDL_SCANCODE_ESCAPE]) {
+                    g_rebind_btn = -1;
+                    ImGui::CloseCurrentPopup();
+                } else if (kbstate[SDL_SCANCODE_DELETE]) {
+                    if (g_rebind_slot == 0) g_pad_binds[g_rebind_btn].button = -1;
+                    else if (g_rebind_slot == 1) g_pad_binds[g_rebind_btn].button1 = -1;
+                    else { g_pad_binds[g_rebind_btn].axis = -1; }
+                    g_rebind_btn = -1;
+                    ImGui::CloseCurrentPopup();
+                } else {
+                    /* Check all open controllers */
+                    for (int ji = 0; ji < SDL_NumJoysticks(); ji++) {
+                        if (!SDL_IsGameController(ji)) continue;
+                        SDL_GameController* gc = SDL_GameControllerOpen(ji);
+                        if (!gc) continue;
+                        if (g_rebind_slot <= 1) {
+                            /* Listening for a button */
+                            for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; b++) {
+                                if (SDL_GameControllerGetButton(gc, (SDL_GameControllerButton)b)) {
+                                    if (g_rebind_slot == 0)
+                                        g_pad_binds[g_rebind_btn].button = b;
+                                    else
+                                        g_pad_binds[g_rebind_btn].button1 = b;
+                                    g_rebind_btn = -1;
+                                    ImGui::CloseCurrentPopup();
+                                    break;
+                                }
+                            }
+                        } else {
+                            /* Listening for an axis */
+                            for (int a = 0; a < SDL_CONTROLLER_AXIS_MAX; a++) {
+                                int16_t val = SDL_GameControllerGetAxis(gc, (SDL_GameControllerAxis)a);
+                                if (val > 16384 || val < -16384) {
+                                    g_pad_binds[g_rebind_btn].axis = a;
+                                    g_pad_binds[g_rebind_btn].axis_dir = (val > 0) ? 1 : -1;
+                                    g_rebind_btn = -1;
+                                    ImGui::CloseCurrentPopup();
+                                    break;
+                                }
+                            }
+                        }
+                        break; /* Only use first controller */
+                    }
+                }
+            }
+            ImGui::EndPopup();
+        }
+
+        /* ---- Keyboard bindings table ---- */
+        ImGui::Text("Keyboard Bindings");
         ImGui::Separator();
-        ImGui::Columns(2, "kb", false);
-        ImGui::SetColumnWidth(0, 100);
-        ImGui::Text("D-pad");   ImGui::NextColumn(); ImGui::Text("Arrows / WASD"); ImGui::NextColumn();
-        ImGui::Text("A");       ImGui::NextColumn(); ImGui::Text("Z / J");         ImGui::NextColumn();
-        ImGui::Text("B");       ImGui::NextColumn(); ImGui::Text("X / K");         ImGui::NextColumn();
-        ImGui::Text("Start");   ImGui::NextColumn(); ImGui::Text("Enter");         ImGui::NextColumn();
-        ImGui::Text("Select");  ImGui::NextColumn(); ImGui::Text("RShift / Backspace"); ImGui::NextColumn();
-        ImGui::Columns(1);
+        if (ImGui::BeginTable("kb_table", 4, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthFixed, 60);
+            ImGui::TableSetupColumn("Key 1", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Key 2", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("##clear", ImGuiTableColumnFlags_WidthFixed, 20);
+            ImGui::TableHeadersRow();
+
+            for (int i = 0; i < GB_BTN_COUNT; i++) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::Text("%s", gb_btn_names[i]);
+
+                ImGui::TableNextColumn();
+                char label[32];
+                snprintf(label, sizeof(label), "%s##k0_%d", scancode_name(g_key_binds[i].key0), i);
+                if (ImGui::Button(label, ImVec2(-1, 0))) {
+                    g_rebind_btn = i; g_rebind_slot = 0; g_rebind_is_pad = false;
+                }
+
+                ImGui::TableNextColumn();
+                snprintf(label, sizeof(label), "%s##k1_%d", scancode_name(g_key_binds[i].key1), i);
+                if (ImGui::Button(label, ImVec2(-1, 0))) {
+                    g_rebind_btn = i; g_rebind_slot = 1; g_rebind_is_pad = false;
+                }
+
+                ImGui::TableNextColumn();
+                /* No clear button needed, rebind popup has Delete to clear */
+            }
+            ImGui::EndTable();
+        }
 
         ImGui::Spacing();
-        ImGui::Text("Gamepad");
+
+        /* ---- Gamepad bindings table ---- */
+        ImGui::Text("Gamepad Bindings");
         ImGui::Separator();
-        ImGui::Columns(2, "gp", false);
-        ImGui::SetColumnWidth(0, 100);
-        ImGui::Text("D-pad");   ImGui::NextColumn(); ImGui::Text("D-pad / L-Stick"); ImGui::NextColumn();
-        ImGui::Text("A");       ImGui::NextColumn(); ImGui::Text("A / Cross");        ImGui::NextColumn();
-        ImGui::Text("B");       ImGui::NextColumn(); ImGui::Text("B / Circle");       ImGui::NextColumn();
-        ImGui::Text("Start");   ImGui::NextColumn(); ImGui::Text("Start / Options");  ImGui::NextColumn();
-        ImGui::Text("Select");  ImGui::NextColumn(); ImGui::Text("Back / Share");     ImGui::NextColumn();
-        ImGui::Columns(1);
+
+        /* Detect controller */
+        const char* ctrl_name = NULL;
+        for (int ji = 0; ji < SDL_NumJoysticks(); ji++) {
+            if (SDL_IsGameController(ji)) {
+                ctrl_name = SDL_GameControllerNameForIndex(ji);
+                break;
+            }
+        }
+        if (ctrl_name) {
+            ImGui::TextColored(ImVec4(0.3f, 0.8f, 0.3f, 1.0f), "Connected: %s", ctrl_name);
+        } else {
+            ImGui::TextDisabled("No gamepad detected");
+        }
+
+        if (ImGui::BeginTable("gp_table", 5, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthFixed, 60);
+            ImGui::TableSetupColumn("Pad Btn 1", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Pad Btn 2", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Axis", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("##clear", ImGuiTableColumnFlags_WidthFixed, 20);
+            ImGui::TableHeadersRow();
+
+            for (int i = 0; i < GB_BTN_COUNT; i++) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::Text("%s", gb_btn_names[i]);
+
+                ImGui::TableNextColumn();
+                char label[48];
+                snprintf(label, sizeof(label), "%s##pb0_%d", pad_button_name(g_pad_binds[i].button), i);
+                if (ImGui::Button(label, ImVec2(-1, 0))) {
+                    g_rebind_btn = i; g_rebind_slot = 0; g_rebind_is_pad = true;
+                }
+
+                ImGui::TableNextColumn();
+                snprintf(label, sizeof(label), "%s##pb1_%d", pad_button_name(g_pad_binds[i].button1), i);
+                if (ImGui::Button(label, ImVec2(-1, 0))) {
+                    g_rebind_btn = i; g_rebind_slot = 1; g_rebind_is_pad = true;
+                }
+
+                ImGui::TableNextColumn();
+                snprintf(label, sizeof(label), "%s##pa_%d", pad_axis_name(g_pad_binds[i].axis, g_pad_binds[i].axis_dir), i);
+                if (ImGui::Button(label, ImVec2(-1, 0))) {
+                    g_rebind_btn = i; g_rebind_slot = 2; g_rebind_is_pad = true;
+                }
+
+                ImGui::TableNextColumn();
+            }
+            ImGui::EndTable();
+        }
+
+        ImGui::Spacing();
+        ImGui::SliderFloat("Stick Deadzone", &g_deadzone, 0.05f, 0.9f, "%.2f");
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        if (ImGui::Button("Save Bindings")) {
+            menu_gui_save_bindings();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset Defaults")) {
+            /* Reset keyboard */
+            g_key_binds[GB_BTN_UP]     = { SDL_SCANCODE_UP,     SDL_SCANCODE_W };
+            g_key_binds[GB_BTN_DOWN]   = { SDL_SCANCODE_DOWN,   SDL_SCANCODE_S };
+            g_key_binds[GB_BTN_LEFT]   = { SDL_SCANCODE_LEFT,   SDL_SCANCODE_A };
+            g_key_binds[GB_BTN_RIGHT]  = { SDL_SCANCODE_RIGHT,  SDL_SCANCODE_D };
+            g_key_binds[GB_BTN_A]      = { SDL_SCANCODE_Z,      SDL_SCANCODE_J };
+            g_key_binds[GB_BTN_B]      = { SDL_SCANCODE_X,      SDL_SCANCODE_K };
+            g_key_binds[GB_BTN_SELECT] = { SDL_SCANCODE_RSHIFT, SDL_SCANCODE_BACKSPACE };
+            g_key_binds[GB_BTN_START]  = { SDL_SCANCODE_RETURN, -1 };
+            /* Reset gamepad */
+            g_pad_binds[GB_BTN_UP]     = { SDL_CONTROLLER_BUTTON_DPAD_UP,    -1, SDL_CONTROLLER_AXIS_LEFTY, -1 };
+            g_pad_binds[GB_BTN_DOWN]   = { SDL_CONTROLLER_BUTTON_DPAD_DOWN,  -1, SDL_CONTROLLER_AXIS_LEFTY, +1 };
+            g_pad_binds[GB_BTN_LEFT]   = { SDL_CONTROLLER_BUTTON_DPAD_LEFT,  -1, SDL_CONTROLLER_AXIS_LEFTX, -1 };
+            g_pad_binds[GB_BTN_RIGHT]  = { SDL_CONTROLLER_BUTTON_DPAD_RIGHT, -1, SDL_CONTROLLER_AXIS_LEFTX, +1 };
+            g_pad_binds[GB_BTN_A]      = { SDL_CONTROLLER_BUTTON_A,    -1, -1, 0 };
+            g_pad_binds[GB_BTN_B]      = { SDL_CONTROLLER_BUTTON_B,    -1, -1, 0 };
+            g_pad_binds[GB_BTN_SELECT] = { SDL_CONTROLLER_BUTTON_BACK, SDL_CONTROLLER_BUTTON_X, -1, 0 };
+            g_pad_binds[GB_BTN_START]  = { SDL_CONTROLLER_BUTTON_START,SDL_CONTROLLER_BUTTON_Y, -1, 0 };
+            g_deadzone = 0.2f;
+        }
     }
     ImGui::End();
 }
@@ -475,6 +792,7 @@ extern "C" void menu_gui_init(void)
     apply_theme();
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = NULL; /* Don't save layout */
+    menu_gui_load_bindings();
 }
 
 extern "C" void menu_gui_draw(GBContext* ctx)
