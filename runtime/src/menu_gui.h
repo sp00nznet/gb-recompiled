@@ -38,6 +38,10 @@ int   menu_gui_get_palette_idx(void);
 int   menu_gui_get_vsync(void);
 float menu_gui_get_master_volume(void);
 int   menu_gui_get_show_fps(void);
+int   menu_gui_get_filter_mode(void);
+int   menu_gui_get_volume(void);
+int   menu_gui_get_scanlines(void);
+int   menu_gui_get_auto_save(void);
 
 /* Signal quit requested */
 int   menu_gui_quit_requested(void);

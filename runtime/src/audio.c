@@ -86,6 +86,7 @@ typedef struct {
     int env_timer;
     uint16_t lfsr;
     bool enabled;
+    uint32_t timer;   /* Cycle accumulator for LFSR clocking */
 } Channel4;
 
 typedef struct GBAudio {
@@ -304,19 +305,22 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
             if ((value & 0xF8) == 0) apu->ch1.enabled = false;
             break;
         case 0xFF13: apu->ch1.nr13 = value; break;
-        case 0xFF14: 
+        case 0xFF14:
             apu->ch1.nr14 = value;
+            apu->ch1.length_enabled = (value & 0x40) != 0;
             if (value & 0x80) {
                 /* Trigger Event */
                 apu->ch1.enabled = true;
                 if (apu->ch1.length_counter == 0) apu->ch1.length_counter = 64;
-                apu->ch1.length_enabled = (value & 0x40) != 0;
-                
+
+                /* Frequency timer reload */
+                apu->ch1.timer = 0;
+
                 /* Envelope Reload */
                 apu->ch1.volume = (apu->ch1.nr12 >> 4);
                 apu->ch1.env_timer = (apu->ch1.nr12 & 0x07);
                 if (apu->ch1.env_timer == 0) apu->ch1.env_timer = 8;
-                
+
                 /* Sweep Reload */
                 apu->ch1.shadow_freq = apu->ch1.nr13 | ((apu->ch1.nr14 & 0x07) << 8);
                 uint8_t sweep_period = (apu->ch1.nr10 >> 4) & 0x07;
@@ -339,12 +343,15 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
             if ((value & 0xF8) == 0) apu->ch2.enabled = false;
             break;
         case 0xFF18: apu->ch2.nr23 = value; break;
-        case 0xFF19: 
+        case 0xFF19:
             apu->ch2.nr24 = value;
+            apu->ch2.length_enabled = (value & 0x40) != 0;
             if (value & 0x80) {
                 apu->ch2.enabled = true;
                 if (apu->ch2.length_counter == 0) apu->ch2.length_counter = 64;
-                apu->ch2.length_enabled = (value & 0x40) != 0;
+
+                /* Frequency timer reload */
+                apu->ch2.timer = 0;
 
                 /* Envelope Reload */
                 apu->ch2.volume = (apu->ch2.nr22 >> 4);
@@ -358,32 +365,39 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
             apu->ch3.nr30 = value; 
             if (!(value & 0x80)) apu->ch3.enabled = false;
             break;
-        case 0xFF1B: apu->ch3.nr31 = value; break;
+        case 0xFF1B:
+            apu->ch3.nr31 = value;
+            apu->ch3.length_counter = 256 - value;
+            break;
         case 0xFF1C: apu->ch3.nr32 = value; break;
         case 0xFF1D: apu->ch3.nr33 = value; break;
-        case 0xFF1E: 
+        case 0xFF1E:
             apu->ch3.nr34 = value;
+            apu->ch3.length_enabled = (value & 0x40) != 0;
             if (value & 0x80) {
                 apu->ch3.enabled = true;
                 if (apu->ch3.length_counter == 0) apu->ch3.length_counter = 256;
-                apu->ch3.length_enabled = (value & 0x40) != 0;
                 apu->ch3.wave_pos = 0;
+                apu->ch3.timer = 0;
             }
             break;
             
         /* Channel 4 */
-        case 0xFF20: apu->ch4.nr41 = value; break;
+        case 0xFF20:
+            apu->ch4.nr41 = value;
+            apu->ch4.length_counter = 64 - (value & 0x3F);
+            break;
         case 0xFF21: 
             apu->ch4.nr42 = value; 
             if ((value & 0xF8) == 0) apu->ch4.enabled = false;
             break;
         case 0xFF22: apu->ch4.nr43 = value; break;
-        case 0xFF23: 
+        case 0xFF23:
             apu->ch4.nr44 = value;
+            apu->ch4.length_enabled = (value & 0x40) != 0;
             if (value & 0x80) {
                 apu->ch4.enabled = true;
                 if (apu->ch4.length_counter == 0) apu->ch4.length_counter = 64;
-                apu->ch4.length_enabled = (value & 0x40) != 0;
                 
                 /* Envelope Reload */
                 apu->ch4.volume = (apu->ch4.nr42 >> 4);
@@ -392,6 +406,7 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
                 
                 /* LFSR Reload */
                 apu->ch4.lfsr = 0x7FFF;
+                apu->ch4.timer = 0;
             }
             break;
             
@@ -433,6 +448,16 @@ void gb_audio_step(GBContext* ctx, uint32_t cycles) {
             if (apu->ch2.length_enabled && apu->ch2.length_counter > 0) {
                 apu->ch2.length_counter--;
                 if (apu->ch2.length_counter == 0) apu->ch2.enabled = false;
+            }
+            /* Channel 3 Length */
+            if (apu->ch3.length_enabled && apu->ch3.length_counter > 0) {
+                apu->ch3.length_counter--;
+                if (apu->ch3.length_counter == 0) apu->ch3.enabled = false;
+            }
+            /* Channel 4 Length */
+            if (apu->ch4.length_enabled && apu->ch4.length_counter > 0) {
+                apu->ch4.length_counter--;
+                if (apu->ch4.length_counter == 0) apu->ch4.enabled = false;
             }
         }
         
@@ -524,15 +549,10 @@ void gb_audio_step(GBContext* ctx, uint32_t cycles) {
         if (period < 8) period = 8;
 
         /* Clock LFSR */
-        /* TODO: This timer logic is simplified, assumes we handle all cycles */
-        /* Normally we'd track residual */
-        /* For noise, we just want to know if we should clock the LFSR */
-        /* Accumulate cycles */
-        static uint32_t ch4_accum = 0; /* Should be in struct, but using static for quick fix */
-        ch4_accum += cycles;
-        
-        while (ch4_accum >= period) {
-            ch4_accum -= period;
+        apu->ch4.timer += cycles;
+
+        while (apu->ch4.timer >= period) {
+            apu->ch4.timer -= period;
             
             /* Shift LFSR */
             uint16_t lfsr = apu->ch4.lfsr;

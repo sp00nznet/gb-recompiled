@@ -1,20 +1,79 @@
-# GB Recompiled
+# GB Recompiled (Fork)
+
+> **This is a fork of [arcanite24/gb-recompiled](https://github.com/arcanite24/gb-recompiled).** The upstream project provides the static recompiler and base runtime. This fork extends the runtime with bug fixes, new features, and a full ImGui-based frontend, developed primarily for the [Link's Awakening DX static recompilation](https://github.com/sp00nznet/LinksAwakening) project.
 
 A **static recompiler** for original GameBoy ROMs that translates Z80 assembly directly into portable, modern C code. Run your favorite classic games without a traditional emulator—just compile and play.
 
-![Compatibility](https://img.shields.io/badge/compatibility-98.9%25-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 
-<p align="center">
-  <img src="dino.png" alt="GB Recompiled Screenshot" width="400">
-</p>
+---
+
+## What This Fork Adds
+
+### Runtime Bug Fixes
+- **Critical (HL) ALU codegen fix** — all ALU ops with `(HL)` operand emitted register B instead of a memory read (~5000 wrong instructions)
+- **STORE8 union aliasing fix** — immediate stores misidentified as register writes, causing bank corruption and VRAM crashes
+- **MBC5 bank range clamping** — prevents out-of-bounds ROM reads
+- **VRAM Mode 3 read block removed** — the per-instruction PPU sync granularity made Mode 3 STAT checks unreliable, causing tile data corruption during copy/restore operations (visible as garbage tiles after text boxes)
+- **APU channel 3/4 length counters** — were never decremented in the frame sequencer, causing sounds to play forever
+- **APU channel length_enabled** — now set on any NRx4 write, not only during trigger
+- **APU NR31/NR41 length counter load** — length counters now load on register write, matching ch1/ch2 behavior
+- **APU ch4 static accumulator** — moved from a `static` local into the Channel4 struct; reset on trigger
+- **APU ch1/ch2 timer reset on trigger** — eliminates stale phase glitches on the first note
+- **Audio buffer cleared on state load** — prevents crackling from stale ring buffer samples
+
+### Full CGB (Game Boy Color) Support
+- `A=0x11` detection for CGB mode
+- CGB palette RAM (BG + OBJ, 8 palettes each)
+- VRAM bank switching (2 banks) and WRAM bank switching (8 banks)
+- HDMA and GDMA transfers
+- CGB PPU attributes (palette, VRAM bank, flip, priority)
+- CGB sprite attributes
+- Double-speed mode
+
+### ImGui Menu System
+- Windows-style menu bar: File, Config, Graphics, Sound, Tools, Controller, Help
+- **Debug window** (F2): CPU registers, game state, Link stats, cheats, memory inspector, IO registers, FPS graph
+- xemu-inspired dark green theme
+- All settings auto-saved to `bindings.cfg`
+
+### Graphics Options
+- Window scale 1x-8x (persisted)
+- V-Sync toggle
+- Texture filtering: Nearest, Bilinear, Scale2x (EPX pixel-art smoothing)
+- Scanline effect
+- Color palettes: Original CGB, Classic Green, Black & White, Amber
+
+### Audio
+- Full 4-channel APU (pulse, pulse, wave, noise)
+- Master volume slider (0-100%)
+- Per-channel mute toggles
+- APU properly reset on context init
+
+### Gamepad & Input
+- Full SDL GameController support with hotplug detection
+- Poll-based input (rebuilt every frame) for responsive controls
+- Rebindable keyboard (2 keys per button) and gamepad (2 buttons + axis per button)
+- Bindings persisted to config file
+
+### Save System
+- **Save states**: F5 save, F7 load (full CPU/memory/PPU snapshot)
+- **Auto-save**: optional 5-minute automatic state saves (Config menu toggle)
+- **SRAM auto-flush**: battery-backed RAM written to disk every ~5 seconds
+
+### Asset Viewer (Tools menu)
+- **Tile viewer**: all 384 tiles per VRAM bank, palette/zoom selectors, BMP export
+- **Sprite viewer**: full OAM table (40 entries) with attributes, sprite sheet BMP export
+- **Tilemap viewer**: BG and Window maps (256x256) with viewport overlay, BMP export
+- **Audio recorder**: real-time waveform display, WAV recording
+- **Palette viewer**: all CGB BG/OBJ palettes with RGB tooltips, DMG palette display
 
 ---
 
 ## Downloads
 
-Pre-built binaries are available on the [Releases](https://github.com/arcanite24/gb-recompiled/releases) page:
+Pre-built binaries for the upstream recompiler are available on the [upstream Releases](https://github.com/arcanite24/gb-recompiled/releases) page:
 
 | Platform | Architecture | File |
 |----------|--------------|------|

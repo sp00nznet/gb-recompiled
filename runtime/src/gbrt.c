@@ -107,6 +107,11 @@ void gb_context_reset(GBContext* ctx, bool skip_bootrom) {
     ctx->halted = 0;
     ctx->stopped = 0;
     
+    /* Reset APU state */
+    if (ctx->apu) {
+        gb_audio_reset(ctx->apu);
+    }
+
     /* Reset RTC state */
     ctx->rtc.s = 0;
     ctx->rtc.m = 0;
@@ -326,7 +331,11 @@ uint8_t gb_read8(GBContext* ctx, uint16_t addr) {
     
     /* VRAM (0x8000-0x9FFF) */
     if (addr < 0xA000) {
-        if ((ctx->io[0x41] & 3) == 3) return 0xFF;
+        /* Mode 3 VRAM read block disabled: our PPU sync granularity is
+         * per-instruction, not per-cycle, so the STAT mode bits can be
+         * stale when this check runs. False Mode 3 blocks cause the game's
+         * tile data copy/restore routines to read 0xFF instead of real
+         * data, corrupting tiles (visible as yellow blocks after text). */
         return ctx->vram[(ctx->vram_bank * VRAM_SIZE) + (addr - 0x8000)];
     }
     
@@ -607,8 +616,19 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
         uint32_t wram_off = (ctx->wram_bank * WRAM_BANK_SIZE) + (addr - 0xD000);
         /* Watch game state variables */
         if (addr == 0xDB95 && value != ctx->wram[wram_off]) {
-            fprintf(stderr, "[STATE] wGameplayType %02X→%02X PC=0x%04X bank=%d\n",
-                    ctx->wram[wram_off], value, ctx->pc, ctx->rom_bank);
+            fprintf(stderr, "[STATE] wGameplayType %02X→%02X PC=0x%04X bank=%d SP=%04X\n",
+                    ctx->wram[wram_off], value, ctx->pc, ctx->rom_bank, ctx->sp);
+            /* Dump stack for call trace */
+            fprintf(stderr, "[STATE]   Stack: ");
+            for (int si = 0; si < 8; si++) {
+                uint16_t ra = gb_read8(ctx, ctx->sp + si*2) | (gb_read8(ctx, ctx->sp + si*2 + 1) << 8);
+                fprintf(stderr, "%04X ", ra);
+            }
+            fprintf(stderr, "\n");
+            /* Also dump D6FE/D6FF */
+            fprintf(stderr, "[STATE]   D6FE=%02X D6FF=%02X DB96=%02X FFF2=%02X\n",
+                    gb_read8(ctx, 0xD6FE), gb_read8(ctx, 0xD6FF),
+                    gb_read8(ctx, 0xDB96), gb_read8(ctx, 0xFFF2));
         }
         ctx->wram[wram_off] = value;
         return;

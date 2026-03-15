@@ -14,6 +14,7 @@
 
 extern "C" {
 #include "menu_gui.h"
+#include "asset_viewer.h"
 #include "gbrt.h"
 }
 
@@ -32,11 +33,12 @@ static struct {
     /* Graphics settings */
     int   scale;              /* 1-8 */
     bool  vsync;
-    int   filter_mode;       /* 0=Nearest, 1=Linear */
+    int   filter_mode;       /* 0=Nearest, 1=Linear, 2=Scale2x */
+    bool  scanlines;
     int   palette_idx;       /* 0=Original, 1=Green, 2=B&W, 3=Amber */
 
     /* Sound settings */
-    float master_volume;
+    int   master_volume;      /* 0-100 percent */
     bool  mute;
     bool  ch1_enabled;
     bool  ch2_enabled;
@@ -46,6 +48,7 @@ static struct {
     /* Speed */
     int   speed_percent;
     bool  show_fps;
+    bool  auto_save;
 
     /* Debug cheats */
     bool  invincible;
@@ -63,11 +66,11 @@ static struct {
     /* Windows */
     false, false, false,
     /* Graphics */
-    3, true, 0, 0,
+    3, true, 0, false, 0,
     /* Sound */
-    1.0f, false, true, true, true, true,
+    100, false, true, true, true, true,
     /* Speed */
-    100, false,
+    100, false, false,
     /* Cheats */
     false, false, false, false, false,
     /* Save state */
@@ -163,8 +166,18 @@ extern "C" void menu_gui_save_bindings(void) {
         fprintf(f, "pad %d %d %d %d %d\n", i, g_pad_binds[i].button, g_pad_binds[i].button1, g_pad_binds[i].axis, g_pad_binds[i].axis_dir);
     }
     fprintf(f, "deadzone %f\n", g_deadzone);
+    /* Graphics/Sound settings */
+    fprintf(f, "scale %d\n", g_menu.scale);
+    fprintf(f, "vsync %d\n", g_menu.vsync ? 1 : 0);
+    fprintf(f, "filter %d\n", g_menu.filter_mode);
+    fprintf(f, "palette %d\n", g_menu.palette_idx);
+    fprintf(f, "volume %d\n", g_menu.master_volume);
+    fprintf(f, "speed %d\n", g_menu.speed_percent);
+    fprintf(f, "show_fps %d\n", g_menu.show_fps ? 1 : 0);
+    fprintf(f, "scanlines %d\n", g_menu.scanlines ? 1 : 0);
+    fprintf(f, "auto_save %d\n", g_menu.auto_save ? 1 : 0);
     fclose(f);
-    fprintf(stderr, "[MENU] Bindings saved to %s\n", path);
+    fprintf(stderr, "[MENU] Settings saved to %s\n", path);
 }
 
 extern "C" void menu_gui_load_bindings(void) {
@@ -187,9 +200,29 @@ extern "C" void menu_gui_load_bindings(void) {
         } else if (sscanf(line, "deadzone %f", &dz) == 1) {
             g_deadzone = dz;
         }
+        /* Graphics/Sound settings */
+        int ival;
+        if (sscanf(line, "scale %d", &ival) == 1 && ival >= 1 && ival <= 8)
+            g_menu.scale = ival;
+        else if (sscanf(line, "vsync %d", &ival) == 1)
+            g_menu.vsync = ival != 0;
+        else if (sscanf(line, "filter %d", &ival) == 1)
+            g_menu.filter_mode = ival;
+        else if (sscanf(line, "palette %d", &ival) == 1 && ival >= 0 && ival < 4)
+            g_menu.palette_idx = ival;
+        else if (sscanf(line, "volume %d", &ival) == 1 && ival >= 0 && ival <= 100)
+            g_menu.master_volume = ival;
+        else if (sscanf(line, "speed %d", &ival) == 1 && ival >= 10 && ival <= 500)
+            g_menu.speed_percent = ival;
+        else if (sscanf(line, "show_fps %d", &ival) == 1)
+            g_menu.show_fps = ival != 0;
+        else if (sscanf(line, "scanlines %d", &ival) == 1)
+            g_menu.scanlines = ival != 0;
+        else if (sscanf(line, "auto_save %d", &ival) == 1)
+            g_menu.auto_save = ival != 0;
     }
     fclose(f);
-    fprintf(stderr, "[MENU] Bindings loaded from %s\n", path);
+    fprintf(stderr, "[MENU] Settings loaded from %s\n", path);
 }
 
 extern "C" const KeyBind* menu_gui_get_key_binds(void) { return g_key_binds; }
@@ -303,6 +336,7 @@ static void draw_menu_bar(GBContext* ctx)
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Quit")) {
+                menu_gui_save_bindings();
                 g_menu.quit_requested = true;
             }
             ImGui::EndMenu();
@@ -310,6 +344,7 @@ static void draw_menu_bar(GBContext* ctx)
 
         /* ---- Config ---- */
         if (ImGui::BeginMenu("Config")) {
+            ImGui::MenuItem("Auto Save", NULL, &g_menu.auto_save);
             ImGui::MenuItem("Show FPS", NULL, &g_menu.show_fps);
             ImGui::Separator();
             ImGui::SliderInt("Speed %", &g_menu.speed_percent, 10, 500);
@@ -338,12 +373,16 @@ static void draw_menu_bar(GBContext* ctx)
             ImGui::Separator();
 
             if (ImGui::BeginMenu("Texture Filter")) {
-                if (ImGui::MenuItem("Nearest (sharp)", NULL, g_menu.filter_mode == 0))
+                if (ImGui::MenuItem("Nearest (sharp pixels)", NULL, g_menu.filter_mode == 0))
                     g_menu.filter_mode = 0;
-                if (ImGui::MenuItem("Linear (smooth)", NULL, g_menu.filter_mode == 1))
+                if (ImGui::MenuItem("Bilinear (smooth)", NULL, g_menu.filter_mode == 1))
                     g_menu.filter_mode = 1;
+                if (ImGui::MenuItem("Scale2x (smooth pixels)", NULL, g_menu.filter_mode == 2))
+                    g_menu.filter_mode = 2;
                 ImGui::EndMenu();
             }
+
+            ImGui::MenuItem("Scanlines", NULL, &g_menu.scanlines);
 
             if (ImGui::BeginMenu("Color Palette")) {
                 const char* pal_names[] = { "Original (CGB Color)", "Classic Green (DMG)",
@@ -359,13 +398,22 @@ static void draw_menu_bar(GBContext* ctx)
 
         /* ---- Sound ---- */
         if (ImGui::BeginMenu("Sound")) {
-            ImGui::SliderFloat("Volume", &g_menu.master_volume, 0.0f, 1.0f, "%.0f%%");
+            ImGui::SliderInt("Volume", &g_menu.master_volume, 0, 100, "%d%%");
             ImGui::MenuItem("Mute", NULL, &g_menu.mute);
             ImGui::Separator();
             ImGui::MenuItem("CH1 - Pulse A", NULL, &g_menu.ch1_enabled);
             ImGui::MenuItem("CH2 - Pulse B", NULL, &g_menu.ch2_enabled);
             ImGui::MenuItem("CH3 - Wave",    NULL, &g_menu.ch3_enabled);
             ImGui::MenuItem("CH4 - Noise",   NULL, &g_menu.ch4_enabled);
+            ImGui::EndMenu();
+        }
+
+        /* ---- Tools ---- */
+        if (ImGui::BeginMenu("Tools")) {
+            bool av_visible = asset_viewer_is_visible();
+            if (ImGui::MenuItem("Asset Viewer", NULL, av_visible)) {
+                asset_viewer_set_visible(!av_visible);
+            }
             ImGui::EndMenu();
         }
 
@@ -801,8 +849,26 @@ extern "C" void menu_gui_init(void)
     menu_gui_load_bindings();
 }
 
+/* Simple settings snapshot for auto-save on change */
+static uint32_t settings_hash(void) {
+    uint32_t h = 0;
+    h = h * 31 + g_menu.scale;
+    h = h * 31 + g_menu.vsync;
+    h = h * 31 + g_menu.filter_mode;
+    h = h * 31 + g_menu.palette_idx;
+    h = h * 31 + g_menu.master_volume;
+    h = h * 31 + g_menu.speed_percent;
+    h = h * 31 + g_menu.show_fps;
+    h = h * 31 + g_menu.scanlines;
+    h = h * 31 + g_menu.auto_save;
+    return h;
+}
+
 extern "C" void menu_gui_draw(GBContext* ctx)
 {
+    static uint32_t prev_hash = 0;
+    uint32_t cur_hash = settings_hash();
+
     /* Always-visible menu bar */
     draw_menu_bar(ctx);
 
@@ -810,6 +876,16 @@ extern "C" void menu_gui_draw(GBContext* ctx)
     if (g_menu.show_debug)      draw_debug_window(ctx);
     if (g_menu.show_about)      draw_about_window();
     if (g_menu.show_controller) draw_controller_window();
+
+    /* Asset viewer */
+    asset_viewer_draw(ctx);
+
+    /* Auto-save settings on change */
+    uint32_t new_hash = settings_hash();
+    if (prev_hash != 0 && new_hash != prev_hash) {
+        menu_gui_save_bindings();
+    }
+    prev_hash = new_hash;
 }
 
 extern "C" void menu_gui_toggle_settings(void)
@@ -841,12 +917,16 @@ extern "C" int menu_gui_get_speed_percent(void) { return g_menu.speed_percent; }
 extern "C" int menu_gui_get_palette_idx(void)  { return g_menu.palette_idx; }
 extern "C" int menu_gui_get_vsync(void)        { return g_menu.vsync ? 1 : 0; }
 extern "C" int menu_gui_get_show_fps(void)     { return g_menu.show_fps ? 1 : 0; }
+extern "C" int menu_gui_get_filter_mode(void)  { return g_menu.filter_mode; }
+extern "C" int menu_gui_get_volume(void)       { return g_menu.master_volume; }
+extern "C" int menu_gui_get_scanlines(void)    { return g_menu.scanlines ? 1 : 0; }
+extern "C" int menu_gui_get_auto_save(void)    { return g_menu.auto_save ? 1 : 0; }
 extern "C" int menu_gui_quit_requested(void)   { return g_menu.quit_requested ? 1 : 0; }
 
 extern "C" float menu_gui_get_master_volume(void)
 {
     if (g_menu.mute) return 0.0f;
-    return g_menu.master_volume;
+    return g_menu.master_volume / 100.0f;
 }
 
 extern "C" int  menu_gui_save_state_requested(void) { return g_menu.save_state_requested ? 1 : 0; }

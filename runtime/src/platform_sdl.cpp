@@ -8,6 +8,7 @@
 #include "ppu.h"
 #include "gbrt_debug.h"
 #include "menu_gui.h"
+#include "asset_viewer.h"
 
 #ifdef GB_HAS_SDL2
 #include <SDL.h>
@@ -26,6 +27,8 @@ static int g_scale = 3;
 static uint32_t g_last_frame_time = 0;
 static SDL_AudioDeviceID g_audio_device = 0;
 static bool g_vsync = true;
+static int g_filter_mode = 0;
+static SDL_Texture* g_texture_2x = NULL; /* For Scale2x (320x288) */
 
 /* Palette data for DMG-mode color remapping */
 static const uint32_t g_palettes[][4] = {
@@ -169,10 +172,16 @@ void gb_platform_shutdown(void) {
         g_audio_device = 0;
     }
     
+    asset_viewer_shutdown();
+
     ImGui_ImplSDLRenderer2_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
 
+    if (g_texture_2x) {
+        SDL_DestroyTexture(g_texture_2x);
+        g_texture_2x = NULL;
+    }
     if (g_texture) {
         SDL_DestroyTexture(g_texture);
         g_texture = NULL;
@@ -220,12 +229,19 @@ static void sdl_audio_callback(void* userdata, Uint8* stream, int len) {
 
 static void on_audio_sample(GBContext* ctx, int16_t left, int16_t right) {
     (void)ctx;
+    /* Apply master volume from menu */
+    float vol = menu_gui_get_master_volume();
+    left = (int16_t)(left * vol);
+    right = (int16_t)(right * vol);
+
     int next_pos = (g_audio_write_pos + 1) % AUDIO_BUFFER_SIZE;
     if (next_pos != g_audio_read_pos) {
         g_audio_buffer[g_audio_write_pos*2] = left;
         g_audio_buffer[g_audio_write_pos*2+1] = right;
         g_audio_write_pos = next_pos;
     }
+    /* Feed asset viewer waveform display / WAV recording */
+    asset_viewer_push_audio(left, right);
 }
 
 bool gb_platform_init(int scale) {
@@ -305,9 +321,17 @@ bool gb_platform_init(int scale) {
     ImGui_ImplSDL2_InitForSDLRenderer(g_window, g_renderer);
     ImGui_ImplSDLRenderer2_Init(g_renderer);
 
-    // Initialize menu system (applies theme)
+    // Initialize menu system (applies theme, loads saved settings)
     menu_gui_init();
-    menu_gui_set_scale(g_scale);
+    /* Use saved scale if available, otherwise keep the default */
+    g_scale = menu_gui_get_scale();
+
+    // Initialize asset viewer (needs renderer for texture creation)
+    asset_viewer_init(g_renderer);
+
+    /* Apply saved window scale */
+    SDL_SetWindowSize(g_window, GB_SCREEN_WIDTH * g_scale, GB_SCREEN_HEIGHT * g_scale);
+    SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
 
     g_texture = SDL_CreateTexture(
         g_renderer,
@@ -529,42 +553,99 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
     if (g_ctx && g_frame_count % 300 == 0) {
         gb_context_save_ram(g_ctx);
     }
+
+    /* Auto-save state every 5 minutes (18000 frames at 60fps) */
+    if (g_ctx && menu_gui_get_auto_save() && g_frame_count > 0 && g_frame_count % 18000 == 0) {
+        gb_platform_save_state(g_ctx);
+        fprintf(stderr, "[AUTO] Auto-saved state at frame %d\n", g_frame_count);
+    }
     
-    /* Update texture */
-    void* pixels;
-    int pitch;
-    SDL_LockTexture(g_texture, NULL, &pixels, &pitch);
-    
-    const uint32_t* src = framebuffer;
-    uint32_t* dst = (uint32_t*)pixels;
-    
+    /* Apply palette remap to a working buffer */
+    static uint32_t fb_work[GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT];
     int palette_idx = menu_gui_get_palette_idx();
     if (palette_idx == 0) {
-        memcpy(dst, src, GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT * sizeof(uint32_t));
+        memcpy(fb_work, framebuffer, sizeof(fb_work));
     } else {
-        uint32_t original_palette[4] = { 0xFFE0F8D0, 0xFF88C070, 0xFF346856, 0xFF081820 };
-
         for (int i = 0; i < GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT; i++) {
-            uint32_t c = src[i];
-            int color_idx = -1;
-            if (c == original_palette[0]) color_idx = 0;
-            else if (c == original_palette[1]) color_idx = 1;
-            else if (c == original_palette[2]) color_idx = 2;
-            else if (c == original_palette[3]) color_idx = 3;
+            uint32_t c = framebuffer[i];
+            uint8_t r = (c >> 16) & 0xFF;
+            uint8_t g = (c >>  8) & 0xFF;
+            uint8_t b = (c >>  0) & 0xFF;
+            int lum = (r * 77 + g * 150 + b * 29) >> 8;
+            int shade;
+            if      (lum < 64)  shade = 3;
+            else if (lum < 128) shade = 2;
+            else if (lum < 192) shade = 1;
+            else                shade = 0;
+            fb_work[i] = g_palettes[palette_idx][shade];
+        }
+    }
 
-            if (color_idx >= 0) {
-                dst[i] = g_palettes[palette_idx][color_idx];
-            } else {
-                dst[i] = c;
+    /* Apply scanline effect (darken every other row by 40%) */
+    bool do_scanlines = menu_gui_get_scanlines() != 0;
+    if (do_scanlines) {
+        for (int y = 1; y < GB_SCREEN_HEIGHT; y += 2) {
+            for (int x = 0; x < GB_SCREEN_WIDTH; x++) {
+                uint32_t c = fb_work[y * GB_SCREEN_WIDTH + x];
+                uint8_t r = ((c >> 16) & 0xFF) * 3 / 5;
+                uint8_t g = ((c >>  8) & 0xFF) * 3 / 5;
+                uint8_t b = ((c >>  0) & 0xFF) * 3 / 5;
+                fb_work[y * GB_SCREEN_WIDTH + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
             }
         }
     }
-    
-    SDL_UnlockTexture(g_texture);
-    
-    /* Clear and render */
-    SDL_RenderClear(g_renderer);
-    SDL_RenderCopy(g_renderer, g_texture, NULL, NULL);
+
+    /* Scale2x filter: produce 320x288 output with smoothed pixel edges */
+    if (g_filter_mode == 2) {
+        if (!g_texture_2x) {
+            g_texture_2x = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_ARGB8888,
+                                              SDL_TEXTUREACCESS_STREAMING,
+                                              GB_SCREEN_WIDTH * 2, GB_SCREEN_HEIGHT * 2);
+        }
+        void* pixels;
+        int pitch;
+        SDL_LockTexture(g_texture_2x, NULL, &pixels, &pitch);
+        uint32_t* dst = (uint32_t*)pixels;
+        int dst_w = pitch / sizeof(uint32_t);
+
+        for (int y = 0; y < GB_SCREEN_HEIGHT; y++) {
+            for (int x = 0; x < GB_SCREEN_WIDTH; x++) {
+                uint32_t P = fb_work[y * GB_SCREEN_WIDTH + x];
+                uint32_t A = (y > 0) ? fb_work[(y-1) * GB_SCREEN_WIDTH + x] : P;
+                uint32_t C = (y < GB_SCREEN_HEIGHT-1) ? fb_work[(y+1) * GB_SCREEN_WIDTH + x] : P;
+                uint32_t B = (x > 0) ? fb_work[y * GB_SCREEN_WIDTH + x - 1] : P;
+                uint32_t D = (x < GB_SCREEN_WIDTH-1) ? fb_work[y * GB_SCREEN_WIDTH + x + 1] : P;
+
+                /* EPX/Scale2x algorithm */
+                uint32_t E0 = P, E1 = P, E2 = P, E3 = P;
+                if (A != C && B != D) {
+                    if (B == A) E0 = B;
+                    if (A == D) E1 = D;
+                    if (B == C) E2 = B;
+                    if (C == D) E3 = D;
+                }
+
+                dst[(y*2)   * dst_w + x*2]     = E0;
+                dst[(y*2)   * dst_w + x*2 + 1] = E1;
+                dst[(y*2+1) * dst_w + x*2]     = E2;
+                dst[(y*2+1) * dst_w + x*2 + 1] = E3;
+            }
+        }
+        SDL_UnlockTexture(g_texture_2x);
+
+        SDL_RenderClear(g_renderer);
+        SDL_RenderCopy(g_renderer, g_texture_2x, NULL, NULL);
+    } else {
+        /* Nearest or Bilinear: use 1x texture */
+        void* pixels;
+        int pitch;
+        SDL_LockTexture(g_texture, NULL, &pixels, &pitch);
+        memcpy(pixels, fb_work, GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT * sizeof(uint32_t));
+        SDL_UnlockTexture(g_texture);
+
+        SDL_RenderClear(g_renderer);
+        SDL_RenderCopy(g_renderer, g_texture, NULL, NULL);
+    }
 
     // ImGui Frame
     ImGui_ImplSDLRenderer2_NewFrame();
@@ -586,6 +667,20 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
     if (new_vsync != g_vsync) {
         g_vsync = new_vsync;
         SDL_RenderSetVSync(g_renderer, g_vsync ? 1 : 0);
+    }
+
+    int new_filter = menu_gui_get_filter_mode();
+    if (new_filter != g_filter_mode) {
+        g_filter_mode = new_filter;
+        /* Recreate 1x texture with appropriate scale mode */
+        if (g_texture) SDL_DestroyTexture(g_texture);
+        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY,
+                    (g_filter_mode == 1) ? "linear" : "nearest");
+        g_texture = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_ARGB8888,
+                                      SDL_TEXTUREACCESS_STREAMING,
+                                      GB_SCREEN_WIDTH, GB_SCREEN_HEIGHT);
+        /* Destroy/recreate 2x texture if switching to/from Scale2x */
+        if (g_texture_2x) { SDL_DestroyTexture(g_texture_2x); g_texture_2x = NULL; }
     }
 
     /* Handle save state requests from menu */
@@ -814,6 +909,14 @@ void gb_platform_load_state(GBContext* ctx) {
         fread(ctx->ppu, sizeof(GBPPU), 1, f);
 
     fclose(f);
+
+    /* Clear audio ring buffer to prevent crackling from stale samples */
+    SDL_LockAudioDevice(g_audio_device);
+    memset(g_audio_buffer, 0, sizeof(g_audio_buffer));
+    g_audio_write_pos = 0;
+    g_audio_read_pos = 0;
+    SDL_UnlockAudioDevice(g_audio_device);
+
     fprintf(stderr, "[STATE] Save state loaded from %s\n", path);
 }
 

@@ -195,6 +195,17 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
              //        gb_read8(ctx, 0xFFBA), gb_read8(ctx, 0xFFBB),
              //        gb_read8(ctx, 0xFFBC), gb_read8(ctx, 0xFFBD));
              // }
+             if (ctx->pc == 0xFFC0) {
+                 fprintf(stderr, "[HRAM] FFC0 trampoline: FFF2=%02X A=%02X bank=%d SP=%04X ret=%04X\n",
+                     gb_read8(ctx, 0xFFF2), ctx->a, ctx->rom_bank, ctx->sp,
+                     (uint16_t)(gb_read8(ctx, ctx->sp) | (gb_read8(ctx, ctx->sp+1) << 8)));
+                 /* Dump FFC0 bytes */
+                 fprintf(stderr, "[HRAM] FFC0 bytes: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                     gb_read8(ctx, 0xFFC0), gb_read8(ctx, 0xFFC1), gb_read8(ctx, 0xFFC2), gb_read8(ctx, 0xFFC3),
+                     gb_read8(ctx, 0xFFC4), gb_read8(ctx, 0xFFC5), gb_read8(ctx, 0xFFC6), gb_read8(ctx, 0xFFC7),
+                     gb_read8(ctx, 0xFFC8), gb_read8(ctx, 0xFFC9), gb_read8(ctx, 0xFFCA), gb_read8(ctx, 0xFFCB),
+                     gb_read8(ctx, 0xFFCC), gb_read8(ctx, 0xFFCD), gb_read8(ctx, 0xFFCE), gb_read8(ctx, 0xFFCF));
+             }
              uint8_t op = gb_read8(ctx, ctx->pc);
              if (op == 0xE0 && gb_read8(ctx, ctx->pc + 1) == 0x46) {
                  // DBG_GENERAL("Interpreter: Intercepted HRAM DMA at 0x%04X", ctx->pc);
