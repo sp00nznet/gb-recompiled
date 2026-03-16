@@ -694,7 +694,7 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
     }
 
     ImGui::Render();
-    ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), g_renderer);
+    ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData());
 
     SDL_RenderPresent(g_renderer);
 }

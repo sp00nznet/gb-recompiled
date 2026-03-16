@@ -254,13 +254,16 @@ uint8_t gb_audio_read(GBContext* ctx, uint16_t addr) {
         }
         
         /* Wave RAM */
-        case 0xFF30 ... 0xFF3F:
+        case 0xFF30: case 0xFF31: case 0xFF32: case 0xFF33:
+        case 0xFF34: case 0xFF35: case 0xFF36: case 0xFF37:
+        case 0xFF38: case 0xFF39: case 0xFF3A: case 0xFF3B:
+        case 0xFF3C: case 0xFF3D: case 0xFF3E: case 0xFF3F:
             if (apu->ch3.enabled) {
                 /* On DMG, if channel 3 is enabled, reading Wave RAM returns the byte currently being accessed */
                 return apu->ch3.wave_ram[apu->ch3.wave_pos / 2];
             }
             return apu->ch3.wave_ram[addr - 0xFF30];
-            
+
         default: return 0xFF;
     }
 }
@@ -415,9 +418,12 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
         case 0xFF25: apu->nr51 = value; break;
         
         /* Wave RAM */
-        case 0xFF30 ... 0xFF3F:
+        case 0xFF30: case 0xFF31: case 0xFF32: case 0xFF33:
+        case 0xFF34: case 0xFF35: case 0xFF36: case 0xFF37:
+        case 0xFF38: case 0xFF39: case 0xFF3A: case 0xFF3B:
+        case 0xFF3C: case 0xFF3D: case 0xFF3E: case 0xFF3F:
             /* If channel 3 is enabled, writes to Wave RAM are ignored (or weird on DMG)
-             * For simplicity/safety, we block writes if enabled. 
+             * For simplicity/safety, we block writes if enabled.
              */
             if (!apu->ch3.enabled) {
                 apu->ch3.wave_ram[addr - 0xFF30] = value;

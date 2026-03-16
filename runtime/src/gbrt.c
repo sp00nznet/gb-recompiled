@@ -194,10 +194,11 @@ bool gb_context_load_rom(GBContext* ctx, const uint8_t* data, size_t size) {
     memcpy(ctx->rom, data, size);
     ctx->rom_size = size;
     
-    /* Parse Header for RAM/Battery info */
+    /* Parse Header for MBC type, RAM, and Battery info */
     if (size > 0x149) {
         uint8_t type = ctx->rom[0x147];
         uint8_t ram_size_code = ctx->rom[0x149];
+        ctx->mbc_type = type;  /* Store cart type for MBC bank switching */
         
         /* Check if battery is present */
         bool has_battery = false;
@@ -901,15 +902,24 @@ void gbrt_log_trace(GBContext* ctx, uint16_t bank, uint16_t addr) {
     }
 }
 
-__attribute__((weak)) void gb_dispatch(GBContext* ctx, uint16_t addr) { 
+/* Default dispatch implementations.
+ * On GCC/Clang these are weak symbols that can be overridden.
+ * On MSVC they are regular functions (pokemon uses its own dispatch_call). */
+#if !defined(_MSC_VER)
+__attribute__((weak))
+#endif
+void gb_dispatch(GBContext* ctx, uint16_t addr) {
     gbrt_log_trace(ctx, (addr < 0x4000) ? 0 : ctx->rom_bank, addr);
-    ctx->pc = addr; 
-    gb_interpret(ctx, addr); 
+    ctx->pc = addr;
+    gb_interpret(ctx, addr);
 }
 
-__attribute__((weak)) void gb_dispatch_call(GBContext* ctx, uint16_t addr) { 
+#if !defined(_MSC_VER)
+__attribute__((weak))
+#endif
+void gb_dispatch_call(GBContext* ctx, uint16_t addr) {
     gbrt_log_trace(ctx, (addr < 0x4000) ? 0 : ctx->rom_bank, addr);
-    ctx->pc = addr; 
+    ctx->pc = addr;
 }
 
 /* ============================================================================

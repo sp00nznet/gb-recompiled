@@ -6,7 +6,10 @@ add_library(gbrt STATIC
     src/interpreter.c
     src/ppu.c
     src/audio.c
+    src/hwtrace.c
     src/platform_sdl.cpp
+    src/menu_gui.cpp
+    src/asset_viewer.cpp
 )
 
 # ImGui sources (if using SDL2)
@@ -23,6 +26,7 @@ if(SDL2_FOUND)
     )
     target_include_directories(gbrt PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/backends
     )
 endif()
 
@@ -30,7 +34,7 @@ target_include_directories(gbrt PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-target_compile_features(gbrt PUBLIC c_std_11 cxx_std_17)
+target_compile_features(gbrt PUBLIC c_std_11 cxx_std_20)
 
 # Debug mode option
 option(GB_DEBUG "Enable debug logging" OFF)
