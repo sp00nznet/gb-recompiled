@@ -9,6 +9,8 @@
 #include "gbrt_debug.h"
 #include "menu_gui.h"
 #include "asset_viewer.h"
+#include "multiplayer/mp_session.h"
+#include "multiplayer/mp_indicators.h"
 
 #ifdef GB_HAS_SDL2
 #include <SDL.h>
@@ -163,6 +165,8 @@ static int g_frame_count = 0;
  * ========================================================================== */
 
 void gb_platform_shutdown(void) {
+    mp_session_shutdown();
+
     if (g_gamepad) {
         SDL_GameControllerClose(g_gamepad);
         g_gamepad = NULL;
@@ -595,6 +599,38 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         }
     }
 
+    /* Render multiplayer player indicators (colored arrows/dots) */
+    if (mp_session_is_active()) {
+        int local_slot = mp_session_get_local_slot();
+        const MPPlayer* local_p = mp_session_get_player(local_slot);
+        if (local_p) {
+            /* Build MPPlayerState array from session data */
+            MPPlayerState ps[MP_MAX_PLAYERS];
+            memset(ps, 0, sizeof(ps));
+            for (int i = 0; i < MP_MAX_PLAYERS; i++) {
+                const MPPlayer* p = mp_session_get_player(i);
+                if (p) {
+                    ps[i].connected = 1;
+                    memcpy(ps[i].name, p->name, MP_MAX_NAME_LEN);
+                    ps[i].color_h = p->color_h;
+                    ps[i].color_s = p->color_s;
+                    ps[i].color_v = p->color_v;
+                    ps[i].map_room = p->map_room;
+                    ps[i].is_indoor = p->is_indoor;
+                    ps[i].dungeon_idx = p->dungeon_idx;
+                    ps[i].health = p->health;
+                    ps[i].max_health = p->max_health;
+                    ps[i].link_x = p->link_x;
+                    ps[i].link_y = p->link_y;
+                    ps[i].ping_ms = p->ping_ms;
+                }
+            }
+            mp_indicators_render(fb_work, local_slot,
+                                 local_p->map_room, local_p->is_indoor,
+                                 ps, MP_MAX_PLAYERS);
+        }
+    }
+
     /* Scale2x filter: produce 320x288 output with smoothed pixel edges */
     if (g_filter_mode == 2) {
         if (!g_texture_2x) {
@@ -651,6 +687,9 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
     ImGui_ImplSDLRenderer2_NewFrame();
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
+
+    /* Update multiplayer session */
+    mp_session_update();
 
     /* Draw menu system */
     menu_gui_draw(g_ctx);

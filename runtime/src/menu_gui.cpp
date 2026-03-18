@@ -18,6 +18,9 @@ extern "C" {
 #include "gbrt.h"
 }
 
+#include "multiplayer/mp_menu.h"
+#include "multiplayer/mp_session.h"
+
 /* ================================================================
  * Menu state
  * ================================================================ */
@@ -425,6 +428,9 @@ static void draw_menu_bar(GBContext* ctx)
             ImGui::MenuItem("Controller Settings", NULL, &g_menu.show_controller);
             ImGui::EndMenu();
         }
+
+        /* ---- Multiplayer ---- */
+        mp_menu_draw_menu_item(ctx);
 
         /* ---- Help ---- */
         if (ImGui::BeginMenu("Help")) {
@@ -850,6 +856,10 @@ extern "C" void menu_gui_init(void)
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = NULL; /* Don't save layout */
     menu_gui_load_bindings();
+
+    /* Initialize multiplayer */
+    mp_session_init();
+    mp_menu_init();
 }
 
 /* Simple settings snapshot for auto-save on change */
@@ -882,6 +892,9 @@ extern "C" void menu_gui_draw(GBContext* ctx)
 
     /* Asset viewer */
     asset_viewer_draw(ctx);
+
+    /* Multiplayer overlays */
+    mp_menu_draw_overlays();
 
     /* Auto-save settings on change */
     uint32_t new_hash = settings_hash();
