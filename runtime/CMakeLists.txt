@@ -10,6 +10,17 @@ add_library(gbrt STATIC
     src/platform_sdl.cpp
     src/menu_gui.cpp
     src/asset_viewer.cpp
+    src/multiplayer/mp_net.cpp
+    src/multiplayer/mp_session.cpp
+    src/multiplayer/mp_menu.cpp
+    src/multiplayer/mp_color.cpp
+    src/multiplayer/mp_worldsync.cpp
+    src/multiplayer/mp_indicators.cpp
+    src/multiplayer/mp_delta.cpp
+    src/multiplayer/mp_trade.cpp
+    src/multiplayer/mp_voice.cpp
+    src/multiplayer/mp_pvp.cpp
+    src/multiplayer/mp_sprites.cpp
 )
 
 # ImGui sources (if using SDL2)
@@ -32,7 +43,16 @@ endif()
 
 target_include_directories(gbrt PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/multiplayer
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/enet/include
 )
+
+# ENet networking library (for multiplayer)
+add_subdirectory(third_party/enet)
+target_link_libraries(gbrt PUBLIC enet)
+if(WIN32)
+    target_link_libraries(gbrt PUBLIC ws2_32 winmm)
+endif()
 
 target_compile_features(gbrt PUBLIC c_std_11 cxx_std_20)
 

@@ -8,6 +8,7 @@
 #include "mp_protocol.h"
 #include "mp_worldsync.h"
 #include "mp_color.h"
+#include "mp_sprites.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -792,13 +793,23 @@ void mp_session_update(void) {
             update_player_from_ctx(p, p->ctx);
             p->ping_ms = mp_net_host_get_rtt(g_session.net, i - 1);
 
-            /* Send framebuffer to client (with color recoloring) */
+            /* Send framebuffer to client (with color recoloring + remote sprites) */
             const uint32_t* fb = gb_get_framebuffer(p->ctx);
             if (fb) {
                 /* Apply player's chosen color to their Link */
                 static uint32_t fb_colored[MP_FRAME_PIXELS];
                 memcpy(fb_colored, fb, MP_FRAME_BYTES);
                 mp_color_recolor_link(fb_colored, p->color_h, p->color_s, p->color_v);
+
+                /* Composite other players' Link sprites onto this framebuffer */
+                for (int j = 0; j < MP_MAX_PLAYERS; j++) {
+                    if (j == i) continue;
+                    MPPlayer* other = &g_session.players[j];
+                    if (!other->active || !other->ctx) continue;
+                    mp_sprites_composite_player(fb_colored, p->ctx, other->ctx,
+                                                other->color_h, other->color_s,
+                                                other->color_v);
+                }
 
                 uint32_t comp_size = mp_rle_compress(
                     fb_colored, MP_FRAME_PIXELS,
@@ -898,9 +909,29 @@ int mp_session_get_player_count(void) {
 
 const uint32_t* mp_session_get_framebuffer(void) {
     if (g_session.is_host) {
-        if (g_session.players[0].ctx)
-            return gb_get_framebuffer(g_session.players[0].ctx);
-        return NULL;
+        if (!g_session.players[0].ctx) return NULL;
+
+        const uint32_t* raw_fb = gb_get_framebuffer(g_session.players[0].ctx);
+        if (!raw_fb) return NULL;
+
+        /* If we have other players, composite their sprites onto the host view */
+        if (g_session.player_count > 1) {
+            static uint32_t host_fb[MP_FRAME_PIXELS];
+            memcpy(host_fb, raw_fb, MP_FRAME_BYTES);
+
+            for (int j = 1; j < MP_MAX_PLAYERS; j++) {
+                MPPlayer* other = &g_session.players[j];
+                if (!other->active || !other->ctx) continue;
+                mp_sprites_composite_player(host_fb,
+                                            g_session.players[0].ctx,
+                                            other->ctx,
+                                            other->color_h, other->color_s,
+                                            other->color_v);
+            }
+            return host_fb;
+        }
+
+        return raw_fb;
     } else {
         return g_session.client_has_frame ? g_session.client_framebuffer : NULL;
     }
