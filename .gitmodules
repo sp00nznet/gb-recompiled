@@ -4,3 +4,6 @@
 [submodule "runtime/third_party/enet"]
 	path = runtime/third_party/enet
 	url = https://github.com/lsalzman/enet.git
+[submodule "tools/mgbdis"]
+	path = tools/mgbdis
+	url = https://github.com/mattcurrie/mgbdis.git
