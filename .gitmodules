@@ -1,0 +1,6 @@
+[submodule "runtime/third_party/imgui"]
+	path = runtime/third_party/imgui
+	url = https://github.com/ocornut/imgui.git
+[submodule "runtime/third_party/enet"]
+	path = runtime/third_party/enet
+	url = https://github.com/lsalzman/enet.git
