@@ -38,8 +38,8 @@ if(LA_HAS_IMGUI)
     target_compile_definitions(gbrt PUBLIC LA_HAS_IMGUI)
 else()
     target_sources(gbrt PRIVATE
-        src/menu_gui_stubs.cpp
-        src/asset_viewer_stubs.cpp
+        src/menu_gui_stubs.c
+        src/asset_viewer_stubs.c
     )
 endif()
 

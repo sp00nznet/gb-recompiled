@@ -3,17 +3,17 @@
  *
  * Compiled into the runtime when LA_HAS_IMGUI is NOT defined (i.e. on
  * platforms without SDL2/ImGui — libxenon, KOS, etc.). Provides the
- * `menu_gui_*` accessors that `platform_*.cpp` calls into so the runtime
- * links without the ImGui menu system.
+ * `menu_gui_*` accessors that `platform_*.c[pp]` calls into so the
+ * runtime links without the ImGui menu system.
  *
  * Returns sensible default values; mutating entry points are no-ops.
- * The platform layer can override behaviour via `gb_platform_*` calls or
- * by providing its own simple settings hook.
+ *
+ * Plain C so it can be compiled by toolchains that don't have a C++
+ * compiler installed (e.g. the typical libxenon devkitxenon install
+ * which only ships xenon-gcc, not xenon-g++).
  */
 
 #include "menu_gui.h"
-
-extern "C" {
 
 void menu_gui_init(void)              {}
 void menu_gui_draw(GBContext* ctx)    { (void)ctx; }
@@ -36,7 +36,7 @@ int   menu_gui_get_auto_save(void)      { return 1; }
 int   menu_gui_quit_requested(void)     { return 0; }
 
 /* Default key bindings: empty (no keyboard on console targets — joypad only) */
-static const KeyBind g_stub_kb[GB_BTN_COUNT] = {0};
+static const KeyBind g_stub_kb[GB_BTN_COUNT] = {{0}};
 static const PadBind g_stub_pb[GB_BTN_COUNT] = {
     /* UP    */ { 11, -1, 1,  -1 },  /* DPAD_UP    + LeftY- */
     /* DOWN  */ { 12, -1, 1,   1 },  /* DPAD_DOWN  + LeftY+ */
@@ -59,5 +59,3 @@ int   menu_gui_save_state_requested(void)        { return 0; }
 int   menu_gui_load_state_requested(void)        { return 0; }
 void  menu_gui_clear_save_state_request(void)    {}
 void  menu_gui_clear_load_state_request(void)    {}
-
-} /* extern "C" */
