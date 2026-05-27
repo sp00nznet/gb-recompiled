@@ -3,6 +3,19 @@
 **Total ROMs Processed:** 1609
 **Success Rate:** 1592/1609 (98.94%)
 
+## Recently verified (post-sweep)
+
+Entries added after the original bulk compatibility run. These are
+manually verified through dedicated game ports rather than the
+automated harness — see the linked port repo for screenshots and
+playthrough evidence.
+
+| ROM File | title | Status | MD5 | Notes |
+| --- | --- | --- | --- | --- |
+| Pokemon - Gold Version (UE) [C][!].zip | POKEMON_GLDAAUE | SUCCESS | a6924ce1f9ad2228e1c6580779b23878 | First Gen 2 Pokémon success. MBC3+TIMER+RAM+BATTERY (cart type 0x10). Exercises the RTC save-persistence path landed in commit `0cd971d`. Verified via [sp00nznet/pokemon-gold](https://github.com/sp00nznet/pokemon-gold) — boots, title screen, intro, wild encounter, overworld all render correctly. |
+
+## Full sweep
+
 | ROM File | title | Status | MD5 | Log |
 | --- | --- | --- | --- | --- |
 | Side Pocket (World).zip | SIDE POCKET | SUCCESS | 3dbe9be772ca50da3a76d8860c7b08e2 | - |
