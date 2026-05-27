@@ -14,6 +14,7 @@ playthrough evidence.
 | --- | --- | --- | --- | --- |
 | Pokemon - Gold Version (UE) [C][!].zip | POKEMON_GLDAAUE | SUCCESS | a6924ce1f9ad2228e1c6580779b23878 | First Gen 2 Pokémon success. MBC3+TIMER+RAM+BATTERY (cart type 0x10). Exercises the RTC save-persistence path landed in commit `0cd971d`. Verified via [sp00nznet/pokemon-gold](https://github.com/sp00nznet/pokemon-gold) — boots, title screen, intro, wild encounter, overworld all render correctly. |
 | Pokemon - Crystal Version (UE) (V1.1) [C][!].zip | PM_CRYSTAL | SUCCESS | 301899b8087289a6436b0a241fbbb474 | Second Gen 2 success; sibling of Gold. Same MBC3+TIMER+RAM+BATTERY cart type. Verified via [sp00nznet/pokemon-crystal](https://github.com/sp00nznet/pokemon-crystal) — title screen with Suicune silhouette, Prof. Elm intro, wild encounter (Rattata), overworld all render correctly. No new runtime fixes needed beyond Gold's. |
+| Pokemon - Silver Version (UE) [C][!].zip | POKEMON_SLVAAXE | SUCCESS | 2ac166169354e84d0e2d7cf4cb40b312 | Third Gen 2 success; shares Gold's engine (generated rom.c is identical size). Same MBC3+TIMER+RAM+BATTERY mapper. Verified via [sp00nznet/pokemon-silver](https://github.com/sp00nznet/pokemon-silver). With this, all three Gen 2 mainline Pokémon titles (Gold / Silver / Crystal) recompile cleanly through this fork. |
 
 ## Full sweep
 
