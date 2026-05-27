@@ -25,6 +25,47 @@
 #define GBRT_WINDOW_TITLE "Game Boy Recompiled"
 #endif
 
+/* Cross-platform mkdir wrapper for the --save-dir override. */
+#ifdef _WIN32
+#  include <direct.h>
+#  define gbrt_mkdir(p) _mkdir(p)
+#else
+#  include <sys/stat.h>
+#  define gbrt_mkdir(p) mkdir((p), 0755)
+#endif
+
+/* Optional override for where battery RAM, RTC state, save states, and
+ * bindings live. Set via gb_platform_set_save_dir() (which the CLI's
+ * --save-dir flag wires up). Empty string = use SDL_GetBasePath() as
+ * before. */
+static char g_save_dir[512] = "";
+
+extern "C" void gb_platform_set_save_dir(const char* path) {
+    if (!path || !*path) {
+        g_save_dir[0] = '\0';
+        return;
+    }
+    /* Best-effort directory creation. EEXIST is fine. */
+    gbrt_mkdir(path);
+    /* Normalise so we can always concatenate "%s%s%s" with a known
+     * separator suffix. */
+    size_t n = strlen(path);
+    if (n + 2 >= sizeof(g_save_dir)) { g_save_dir[0] = '\0'; return; }
+    memcpy(g_save_dir, path, n);
+    if (g_save_dir[n - 1] != '/' && g_save_dir[n - 1] != '\\') {
+        g_save_dir[n++] = '/';
+    }
+    g_save_dir[n] = '\0';
+}
+
+/* Returns a writable "directory prefix" (always ends in a separator)
+ * for save data. Caller copies into its own buffer. Returns NULL if no
+ * default could be resolved. */
+static char* sdl_save_prefix_dup(void) {
+    if (g_save_dir[0]) return SDL_strdup(g_save_dir);
+    return SDL_GetBasePath();
+}
+
 #ifdef LA_HAS_IMGUI
 #include "imgui.h"
 #include "backends/imgui_impl_sdl2.h"
@@ -1126,13 +1167,15 @@ void gb_platform_set_title(const char* title) {
 
 static void get_state_path(char* buf, size_t size) {
 #ifdef __ANDROID__
-    const char* astore = SDL_AndroidGetInternalStoragePath();
-    if (astore) {
-        snprintf(buf, size, "%s/savestate.bin", astore);
-        return;
+    if (!g_save_dir[0]) {
+        const char* astore = SDL_AndroidGetInternalStoragePath();
+        if (astore) {
+            snprintf(buf, size, "%s/savestate.bin", astore);
+            return;
+        }
     }
 #endif
-    char* base = SDL_GetBasePath();
+    char* base = sdl_save_prefix_dup();
     if (base) {
         snprintf(buf, size, "%ssavestate.bin", base);
         SDL_free(base);
@@ -1317,7 +1360,7 @@ void gb_platform_load_state(GBContext* ctx) {
 static void sdl_get_sidecar_path(char* buffer, size_t size,
                                  const char* rom_name, const char* ext) {
 #ifdef __ANDROID__
-    {
+    if (!g_save_dir[0]) {
         const char* astore = SDL_AndroidGetInternalStoragePath();
         if (astore) {
             const char* bn = strrchr(rom_name, '/');
@@ -1327,7 +1370,7 @@ static void sdl_get_sidecar_path(char* buffer, size_t size,
         }
     }
 #endif
-    char* base_path = SDL_GetBasePath();
+    char* base_path = sdl_save_prefix_dup();
     if (base_path) {
         const char* base_name = strrchr(rom_name, '/');
 #ifdef _WIN32
@@ -1346,38 +1389,10 @@ static void sdl_get_sidecar_path(char* buffer, size_t size,
     }
 }
 
+/* Just defers to the generic resolver so .sav and .rtc go to the same
+ * place (and so --save-dir applies to both). */
 static void sdl_get_save_path(char* buffer, size_t size, const char* rom_name) {
-#ifdef __ANDROID__
-    {
-        const char* astore = SDL_AndroidGetInternalStoragePath();
-        if (astore) {
-            const char* bn = strrchr(rom_name, '/');
-            bn = bn ? bn + 1 : rom_name;
-            snprintf(buffer, size, "%s/%s.sav", astore, bn);
-            return;
-        }
-    }
-#endif
-    char* base_path = SDL_GetBasePath();
-    if (base_path) {
-        // Extract just the filename from rom_name to avoid path traversal issues
-        const char* base_name = strrchr(rom_name, '/');
-#ifdef _WIN32
-        const char* base_name_win = strrchr(rom_name, '\\');
-        if (base_name_win > base_name) base_name = base_name_win;
-#endif
-        if (base_name) {
-            base_name++; // Skip separator
-        } else {
-            base_name = rom_name;
-        }
-
-        snprintf(buffer, size, "%s%s.sav", base_path, base_name);
-        SDL_free(base_path);
-    } else {
-        // Fallback to CWD if SDL_GetBasePath fails
-        snprintf(buffer, size, "%s.sav", rom_name);
-    }
+    sdl_get_sidecar_path(buffer, size, rom_name, ".sav");
 }
 
 static bool sdl_load_battery_ram(GBContext* ctx, const char* rom_name, void* data, size_t size) {

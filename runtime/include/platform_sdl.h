@@ -64,6 +64,20 @@ void gb_platform_vsync(void);
 void gb_platform_set_title(const char* title);
 
 /**
+ * @brief Override the directory where battery RAM (.sav), RTC sidecar
+ *        (.rtc), bindings (bindings.cfg) and save-states live.
+ *
+ * When unset (the default), files are written next to the executable
+ * via SDL_GetBasePath(). Useful when running multiple rom.exe instances
+ * on the same machine (e.g. for link-cable multiplayer testing) so they
+ * don't clobber each other's saves. The directory is created if it does
+ * not exist.
+ *
+ * Pass NULL or "" to clear the override and fall back to the default.
+ */
+void gb_platform_set_save_dir(const char* path);
+
+/**
  * @brief Save full program state to disk
  */
 void gb_platform_save_state(GBContext* ctx);
