@@ -71,6 +71,14 @@ typedef struct {
     /* Save Data / External RAM */
     bool (*load_battery_ram)(GBContext* ctx, const char* rom_name, void* data, size_t size);
     bool (*save_battery_ram)(GBContext* ctx, const char* rom_name, const void* data, size_t size);
+
+    /* MBC3 real-time clock state. Optional; only invoked for carts whose
+     * header byte 0x0147 is 0x0F or 0x10 (TIMER[+RAM]+BATTERY). 48 bytes,
+     * BGB-compatible layout: 5x uint32 LE current S/M/H/DL/DH, then 5x
+     * uint32 LE latched, then 8 bytes uint64 LE host-time-of-save.
+     * Platforms typically persist these next to the .sav (e.g. .rtc). */
+    bool (*load_rtc_state)(GBContext* ctx, const char* rom_name, void* data, size_t size);
+    bool (*save_rtc_state)(GBContext* ctx, const char* rom_name, const void* data, size_t size);
 } GBPlatformCallbacks;
 
 /**

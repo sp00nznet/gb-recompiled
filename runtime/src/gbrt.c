@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "gbrt_debug.h"
 
 /* ============================================================================
@@ -16,6 +17,12 @@
 #define OAM_SIZE       0xA0
 #define IO_SIZE        0x80
 #define HRAM_SIZE      0x7F
+
+/* Forward declarations for MBC3 RTC helpers (defined below, used in
+ * gb_context_load_rom before the helper block). */
+#define GBRT_RTC_STATE_SIZE 48
+static bool gbrt_cart_has_rtc(const GBContext* ctx);
+static void gbrt_rtc_unpack(GBContext* ctx, const uint8_t buf[GBRT_RTC_STATE_SIZE]);
 
 /* ============================================================================
  * Globals
@@ -262,11 +269,152 @@ bool gb_context_load_rom(GBContext* ctx, const uint8_t* data, size_t size) {
                     if (ctx->callbacks.load_battery_ram(ctx, title, ctx->eram, ctx->eram_size)) {
                          printf("[GBRT] Loaded battery RAM for '%s'\n", title);
                     }
+
+                    /* Restore MBC3 RTC state if this cart has one. The
+                     * unpack helper also advances the clock by however
+                     * many wall-clock seconds elapsed since the last
+                     * save, matching what a real cart's onboard oscillator
+                     * would do while the system was powered off. */
+                    if (gbrt_cart_has_rtc(ctx) && ctx->callbacks.load_rtc_state) {
+                        uint8_t rtc_buf[GBRT_RTC_STATE_SIZE] = {0};
+                        if (ctx->callbacks.load_rtc_state(ctx, title, rtc_buf, sizeof(rtc_buf))) {
+                            gbrt_rtc_unpack(ctx, rtc_buf);
+                            printf("[GBRT] Loaded RTC state for '%s'\n", title);
+                        }
+                    }
                 }
             }
         }
     }
-    
+
+    return true;
+}
+
+/* ============================================================================
+ * MBC3 RTC state serialisation (BGB-compatible 48-byte format)
+ *
+ * Layout:
+ *   off 0x00  uint32 LE  S        (current seconds)
+ *   off 0x04  uint32 LE  M        (current minutes)
+ *   off 0x08  uint32 LE  H        (current hours)
+ *   off 0x0C  uint32 LE  DL       (current day counter low)
+ *   off 0x10  uint32 LE  DH       (current day counter high / halt / carry)
+ *   off 0x14  uint32 LE  LS       (latched S)
+ *   off 0x18  uint32 LE  LM       (latched M)
+ *   off 0x1C  uint32 LE  LH       (latched H)
+ *   off 0x20  uint32 LE  LDL      (latched DL)
+ *   off 0x24  uint32 LE  LDH      (latched DH)
+ *   off 0x28  uint64 LE  unix_ts  (seconds since epoch when this state
+ *                                  was last serialised; used to advance
+ *                                  the RTC forward by wall-clock time
+ *                                  on load, like a real cart's onboard
+ *                                  oscillator running while the system
+ *                                  is powered down)
+ *
+ * This matches the format BGB / VBA-M / mGBA emit for the `.rtc` sidecar
+ * file alongside the .sav. A halted RTC (DH bit 6 set) does not advance.
+ * ========================================================================== */
+
+static bool gbrt_cart_has_rtc(const GBContext* ctx) {
+    if (!ctx || ctx->rom_size < 0x148) return false;
+    uint8_t cart = ctx->rom[0x0147];
+    return cart == 0x0F || cart == 0x10;  /* MBC3+TIMER[+RAM]+BATTERY */
+}
+
+static void gbrt_write_u32_le(uint8_t* p, uint32_t v) {
+    p[0] = (uint8_t)(v       & 0xFF);
+    p[1] = (uint8_t)((v >> 8) & 0xFF);
+    p[2] = (uint8_t)((v >> 16) & 0xFF);
+    p[3] = (uint8_t)((v >> 24) & 0xFF);
+}
+
+static uint32_t gbrt_read_u32_le(const uint8_t* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void gbrt_write_u64_le(uint8_t* p, uint64_t v) {
+    for (int i = 0; i < 8; i++) p[i] = (uint8_t)((v >> (8 * i)) & 0xFF);
+}
+
+static uint64_t gbrt_read_u64_le(const uint8_t* p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) v |= (uint64_t)p[i] << (8 * i);
+    return v;
+}
+
+static void gbrt_rtc_pack(const GBContext* ctx, uint8_t buf[GBRT_RTC_STATE_SIZE]) {
+    gbrt_write_u32_le(buf + 0x00, ctx->rtc.s);
+    gbrt_write_u32_le(buf + 0x04, ctx->rtc.m);
+    gbrt_write_u32_le(buf + 0x08, ctx->rtc.h);
+    gbrt_write_u32_le(buf + 0x0C, ctx->rtc.dl);
+    gbrt_write_u32_le(buf + 0x10, ctx->rtc.dh);
+    gbrt_write_u32_le(buf + 0x14, ctx->rtc.latched_s);
+    gbrt_write_u32_le(buf + 0x18, ctx->rtc.latched_m);
+    gbrt_write_u32_le(buf + 0x1C, ctx->rtc.latched_h);
+    gbrt_write_u32_le(buf + 0x20, ctx->rtc.latched_dl);
+    gbrt_write_u32_le(buf + 0x24, ctx->rtc.latched_dh);
+    gbrt_write_u64_le(buf + 0x28, (uint64_t)time(NULL));
+}
+
+/* Advance the unhalted RTC by `elapsed_seconds`, propagating S->M->H->DL/DH
+ * just like the cart's oscillator would. The DH carry bit (bit 7) latches
+ * on day overflow; the halt bit (bit 6) and the day-high bit (bit 0)
+ * pass through unchanged. */
+static void gbrt_rtc_advance(GBContext* ctx, uint64_t elapsed_seconds) {
+    if (ctx->rtc.dh & 0x40) return;  /* Halted - oscillator stopped */
+    if (elapsed_seconds == 0) return;
+
+    uint64_t total = (uint64_t)ctx->rtc.s + elapsed_seconds;
+    ctx->rtc.s = (uint8_t)(total % 60);
+    uint64_t carry_m = total / 60;
+
+    total = (uint64_t)ctx->rtc.m + carry_m;
+    ctx->rtc.m = (uint8_t)(total % 60);
+    uint64_t carry_h = total / 60;
+
+    total = (uint64_t)ctx->rtc.h + carry_h;
+    ctx->rtc.h = (uint8_t)(total % 24);
+    uint64_t carry_d = total / 24;
+
+    uint64_t days = (uint64_t)ctx->rtc.dl
+                  | ((uint64_t)(ctx->rtc.dh & 0x01) << 8);
+    days += carry_d;
+    if (days >= 0x200) {
+        ctx->rtc.dh |= 0x80;   /* Day-counter overflow carry */
+        days %= 0x200;
+    }
+    ctx->rtc.dl = (uint8_t)(days & 0xFF);
+    ctx->rtc.dh = (uint8_t)((ctx->rtc.dh & ~0x01) | ((days >> 8) & 0x01));
+}
+
+static void gbrt_rtc_unpack(GBContext* ctx, const uint8_t buf[GBRT_RTC_STATE_SIZE]) {
+    ctx->rtc.s  = (uint8_t)gbrt_read_u32_le(buf + 0x00);
+    ctx->rtc.m  = (uint8_t)gbrt_read_u32_le(buf + 0x04);
+    ctx->rtc.h  = (uint8_t)gbrt_read_u32_le(buf + 0x08);
+    ctx->rtc.dl = (uint8_t)gbrt_read_u32_le(buf + 0x0C);
+    ctx->rtc.dh = (uint8_t)gbrt_read_u32_le(buf + 0x10);
+    ctx->rtc.latched_s  = (uint8_t)gbrt_read_u32_le(buf + 0x14);
+    ctx->rtc.latched_m  = (uint8_t)gbrt_read_u32_le(buf + 0x18);
+    ctx->rtc.latched_h  = (uint8_t)gbrt_read_u32_le(buf + 0x1C);
+    ctx->rtc.latched_dl = (uint8_t)gbrt_read_u32_le(buf + 0x20);
+    ctx->rtc.latched_dh = (uint8_t)gbrt_read_u32_le(buf + 0x24);
+
+    uint64_t saved_ts = gbrt_read_u64_le(buf + 0x28);
+    uint64_t now_ts   = (uint64_t)time(NULL);
+    if (saved_ts > 0 && now_ts > saved_ts) {
+        gbrt_rtc_advance(ctx, now_ts - saved_ts);
+    }
+}
+
+static bool gbrt_rom_title(const GBContext* ctx, char out[17]) {
+    memset(out, 0, 17);
+    if (ctx->rom_size <= 0x143) return false;
+    memcpy(out, &ctx->rom[0x134], 16);
+    for (int i = 0; i < 16; i++) {
+        if (out[i] == 0 || out[i] < 32 || out[i] > 126) out[i] = 0;
+    }
+    if (out[0] == 0) { strcpy(out, "UNKNOWN_GAME"); return false; }
     return true;
 }
 
@@ -274,23 +422,31 @@ bool gb_context_save_ram(GBContext* ctx) {
     if (!ctx || !ctx->eram || !ctx->eram_size || !ctx->callbacks.save_battery_ram) {
         return false;
     }
-    
-    /* Get ROM title for filename */
-    char title[17] = {0};
-    if (ctx->rom_size > 0x143) {
-        memcpy(title, &ctx->rom[0x134], 16);
-        for(int i=0; i<16; i++) {
-            if(title[i] == 0 || title[i] < 32 || title[i] > 126) title[i] = 0;
-        }
-    }
-    if(title[0] == 0) strcpy(title, "UNKNOWN_GAME");
-    
+
+    char title[17];
+    gbrt_rom_title(ctx, title);
+
     bool result = ctx->callbacks.save_battery_ram(ctx, title, ctx->eram, ctx->eram_size);
     if (result) {
         printf("[GBRT] Saved battery RAM for '%s'\n", title);
     } else {
         printf("[GBRT] Failed to save battery RAM for '%s'\n", title);
     }
+
+    /* Persist MBC3 RTC state alongside the battery RAM. Only carts with a
+     * built-in RTC (header byte 0x147 = 0x0F or 0x10) get this; everyone
+     * else skips silently so the .rtc sidecar doesn't litter every save
+     * directory. */
+    if (gbrt_cart_has_rtc(ctx) && ctx->callbacks.save_rtc_state) {
+        uint8_t rtc_buf[GBRT_RTC_STATE_SIZE];
+        gbrt_rtc_pack(ctx, rtc_buf);
+        if (ctx->callbacks.save_rtc_state(ctx, title, rtc_buf, sizeof(rtc_buf))) {
+            printf("[GBRT] Saved RTC state for '%s'\n", title);
+        } else {
+            printf("[GBRT] Failed to save RTC state for '%s'\n", title);
+        }
+    }
+
     return result;
 }
 
