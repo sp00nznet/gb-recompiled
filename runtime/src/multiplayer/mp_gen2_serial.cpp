@@ -252,6 +252,22 @@ void mp_gen2_pump(void) {
 MPGen2State mp_gen2_get_state(void) { return g_state; }
 const char* mp_gen2_state_string(void) { return state_str_impl(); }
 
+/* Send a SERIAL_BYTE packet (helper used by both master and slave paths). */
+static bool send_serial_byte(uint8_t out_byte, uint8_t mode) {
+    MPGen2SerialPacket pkt = {};
+    pkt.op       = MP_GEN2_OP_SERIAL_BYTE;
+    pkt.out_byte = out_byte;
+    pkt.mode     = mode;
+    pkt.seq      = g_next_send_seq++;
+    ENetPacket* p = enet_packet_create(&pkt, sizeof(pkt), ENET_PACKET_FLAG_RELIABLE);
+    if (!p || enet_peer_send(g_peer, 0, p) != 0) {
+        fprintf(stderr, "[MP-GEN2] send failed\n");
+        return false;
+    }
+    enet_host_flush(g_host);
+    return true;
+}
+
 uint8_t mp_gen2_serial_exchange(GBContext* /*ctx*/,
                                  uint8_t out_byte,
                                  uint8_t mode,
@@ -262,47 +278,111 @@ uint8_t mp_gen2_serial_exchange(GBContext* /*ctx*/,
         if (g_state != MP_GEN2_CONNECTED) return 0xFF;
     }
 
-    uint32_t my_seq = g_next_send_seq++;
-
-    /* Send our byte. Master goes first by definition; slave still emits
-     * its byte immediately so the master can pair it on the next pump. */
-    MPGen2SerialPacket pkt = {};
-    pkt.op       = MP_GEN2_OP_SERIAL_BYTE;
-    pkt.out_byte = out_byte;
-    pkt.mode     = mode;
-    pkt.seq      = my_seq;
-    ENetPacket* p = enet_packet_create(&pkt, sizeof(pkt), ENET_PACKET_FLAG_RELIABLE);
-    if (!p || enet_peer_send(g_peer, 0, p) != 0) {
-        fprintf(stderr, "[MP-GEN2] send failed\n");
-        return 0xFF;
-    }
-    /* enet_host_service flushes outgoing packets implicitly; flush
-     * explicitly so the partner doesn't have to wait for the next pump. */
-    enet_host_flush(g_host);
-
-    /* Now wait for partner's byte with the matching opposite-role mode.
-     * (Master expects SLAVE byte from partner; slave expects MASTER.) */
-    uint8_t want_mode = (mode == GB_SERIAL_MASTER) ? GB_SERIAL_SLAVE
-                                                   : GB_SERIAL_MASTER;
     uint32_t start = SDL_GetTicks();
+
+    /* Real link-cable semantics: only the *master* writes onto the wire.
+     * Slave's SC=0x80 means "ready to receive whenever master drives the
+     * clock" — it does NOT push a byte by itself. Emulating that here is
+     * important because Pokemon Gen 2's Cable Club spends a long time
+     * with both sides in slave mode polling for the partner's first
+     * handshake byte; if slave sent eagerly on every poll we'd flood the
+     * network and the inbox would fill with stale bytes. */
+    if (mode == GB_SERIAL_MASTER) {
+        if (!send_serial_byte(out_byte, GB_SERIAL_MASTER)) return 0xFF;
+
+        /* Now wait for the slave's reply. */
+        while (true) {
+            mp_gen2_pump();
+            if (g_state != MP_GEN2_CONNECTED) return 0xFF;
+            for (auto it = g_inbox.begin(); it != g_inbox.end(); ++it) {
+                if (it->mode == GB_SERIAL_SLAVE) {
+                    uint8_t in = it->out_byte;
+                    g_inbox.erase(it);
+                    return in;
+                }
+            }
+            if (SDL_GetTicks() - start >= timeout_ms) {
+                fprintf(stderr, "[MP-GEN2] master timed out waiting for slave (%u ms)\n", timeout_ms);
+                return 0xFF;
+            }
+            SDL_Delay(1);
+        }
+    }
+
+    /* SLAVE: wait for master to push a byte, then reply with our own. */
     while (true) {
         mp_gen2_pump();
-        if (g_state != MP_GEN2_CONNECTED) return 0xFF;  /* Cable yanked */
-
-        /* Try to pop the oldest matching-mode entry from the inbox. */
+        if (g_state != MP_GEN2_CONNECTED) return 0xFF;
         for (auto it = g_inbox.begin(); it != g_inbox.end(); ++it) {
-            if (it->mode == want_mode) {
+            if (it->mode == GB_SERIAL_MASTER) {
                 uint8_t in = it->out_byte;
                 g_inbox.erase(it);
+                send_serial_byte(out_byte, GB_SERIAL_SLAVE);
                 return in;
             }
         }
         if (SDL_GetTicks() - start >= timeout_ms) {
-            fprintf(stderr, "[MP-GEN2] serial_exchange timed out (%u ms)\n", timeout_ms);
+            /* Timeout in slave mode is normal/common — Pokemon polls
+             * heavily before handshake. Don't spam the log. */
             return 0xFF;
         }
         SDL_Delay(1);
     }
+}
+
+/* ============================================================================
+ * Self-test
+ *
+ * Exercises the transport end-to-end without requiring an actual game
+ * ROM in the loop. Call after mp_gen2_host or mp_gen2_connect. One side
+ * runs as master, the other as slave; together they validate that 256
+ * known bytes cross the wire in both directions with no corruption,
+ * loss, or reordering.
+ *
+ * Exits with PASS / FAIL printed to stderr; returns true on PASS.
+ * ========================================================================== */
+
+bool mp_gen2_self_test(bool is_master, uint32_t connect_timeout_ms) {
+    fprintf(stderr, "[MP-TEST] Waiting up to %u ms for partner...\n", connect_timeout_ms);
+    uint32_t t0 = SDL_GetTicks();
+    while (mp_gen2_get_state() != MP_GEN2_CONNECTED) {
+        mp_gen2_pump();
+        if (mp_gen2_get_state() == MP_GEN2_DISCONNECTED) {
+            fprintf(stderr, "[MP-TEST] DISCONNECTED before handshake. FAIL.\n");
+            return false;
+        }
+        if (SDL_GetTicks() - t0 >= connect_timeout_ms) {
+            fprintf(stderr, "[MP-TEST] Connect timeout. FAIL.\n");
+            return false;
+        }
+        SDL_Delay(10);
+    }
+    fprintf(stderr, "[MP-TEST] Linked as %s. Exchanging 256 bytes...\n",
+            is_master ? "MASTER" : "SLAVE");
+
+    int errors = 0;
+    for (int i = 0; i < 256; i++) {
+        uint8_t out          = is_master ? (uint8_t)i : (uint8_t)(255 - i);
+        uint8_t expected_in  = is_master ? (uint8_t)(255 - i) : (uint8_t)i;
+        uint8_t in = mp_gen2_serial_exchange(nullptr, out,
+                                              is_master ? GB_SERIAL_MASTER : GB_SERIAL_SLAVE,
+                                              2000);
+        if (in != expected_in) {
+            fprintf(stderr, "[MP-TEST] Byte %d FAIL: sent 0x%02X, expected 0x%02X, got 0x%02X\n",
+                    i, out, expected_in, in);
+            errors++;
+            if (errors >= 8) {
+                fprintf(stderr, "[MP-TEST] Aborting after 8 mismatches.\n");
+                break;
+            }
+        }
+    }
+    if (errors == 0) {
+        fprintf(stderr, "[MP-TEST] PASS (256/256 bytes round-tripped)\n");
+        return true;
+    }
+    fprintf(stderr, "[MP-TEST] FAIL (%d errors)\n", errors);
+    return false;
 }
 
 }  /* extern "C" */

@@ -72,6 +72,11 @@ uint8_t mp_gen2_serial_exchange(GBContext* ctx,
                                  uint8_t mode,
                                  uint32_t timeout_ms);
 
+/* Transport self-test. Call after mp_gen2_host or mp_gen2_connect;
+ * exchanges 256 known bytes with the partner and prints PASS / FAIL.
+ * Does not need a game ROM. Returns true on PASS. */
+bool mp_gen2_self_test(bool is_master, uint32_t connect_timeout_ms);
+
 #ifdef __cplusplus
 }
 #endif
