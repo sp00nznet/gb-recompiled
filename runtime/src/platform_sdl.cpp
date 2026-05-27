@@ -16,6 +16,15 @@
 
 #ifdef GB_HAS_SDL2
 #include <SDL.h>
+
+/* Window title is overridable by the project (`-DGBRT_WINDOW_TITLE=\"...\"`
+ * or `target_compile_definitions(... PUBLIC GBRT_WINDOW_TITLE=\"My Game\")`).
+ * Defaults to a neutral name so the runtime isn't pre-branded for any
+ * specific port. */
+#ifndef GBRT_WINDOW_TITLE
+#define GBRT_WINDOW_TITLE "Game Boy Recompiled"
+#endif
+
 #ifdef LA_HAS_IMGUI
 #include "imgui.h"
 #include "backends/imgui_impl_sdl2.h"
@@ -476,7 +485,7 @@ bool gb_platform_init(int scale) {
     SDL_DisplayMode dm;
     if (SDL_GetDesktopDisplayMode(0, &dm) != 0) { dm.w = 1280; dm.h = 720; }
     g_window = SDL_CreateWindow(
-        "Link's Awakening Recompiled",
+        GBRT_WINDOW_TITLE,
         SDL_WINDOWPOS_UNDEFINED,
         SDL_WINDOWPOS_UNDEFINED,
         dm.w, dm.h,
@@ -487,7 +496,7 @@ bool gb_platform_init(int scale) {
      * resizing the <canvas> to track the browser window. The HTML shell's
      * CSS controls the on-page display size. */
     g_window = SDL_CreateWindow(
-        "Link's Awakening Recompiled",
+        GBRT_WINDOW_TITLE,
         SDL_WINDOWPOS_UNDEFINED,
         SDL_WINDOWPOS_UNDEFINED,
         GB_SCREEN_WIDTH * g_scale,
@@ -496,7 +505,7 @@ bool gb_platform_init(int scale) {
     );
 #else
     g_window = SDL_CreateWindow(
-        "Link's Awakening Recompiled",
+        GBRT_WINDOW_TITLE,
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
         GB_SCREEN_WIDTH * g_scale,
@@ -1291,6 +1300,38 @@ void gb_platform_load_state(GBContext* ctx) {
  * Save Data (battery-backed SRAM)
  * ========================================================================== */
 
+static void sdl_get_sidecar_path(char* buffer, size_t size,
+                                 const char* rom_name, const char* ext) {
+#ifdef __ANDROID__
+    {
+        const char* astore = SDL_AndroidGetInternalStoragePath();
+        if (astore) {
+            const char* bn = strrchr(rom_name, '/');
+            bn = bn ? bn + 1 : rom_name;
+            snprintf(buffer, size, "%s/%s%s", astore, bn, ext);
+            return;
+        }
+    }
+#endif
+    char* base_path = SDL_GetBasePath();
+    if (base_path) {
+        const char* base_name = strrchr(rom_name, '/');
+#ifdef _WIN32
+        const char* base_name_win = strrchr(rom_name, '\\');
+        if (base_name_win > base_name) base_name = base_name_win;
+#endif
+        if (base_name) {
+            base_name++;
+        } else {
+            base_name = rom_name;
+        }
+        snprintf(buffer, size, "%s%s%s", base_path, base_name, ext);
+        SDL_free(base_path);
+    } else {
+        snprintf(buffer, size, "%s%s", rom_name, ext);
+    }
+}
+
 static void sdl_get_save_path(char* buffer, size_t size, const char* rom_name) {
 #ifdef __ANDROID__
     {
@@ -1343,13 +1384,39 @@ static bool sdl_save_battery_ram(GBContext* ctx, const char* rom_name, const voi
     (void)ctx;
     char filename[512];
     sdl_get_save_path(filename, sizeof(filename), rom_name);
-    
+
     FILE* f = fopen(filename, "wb");
     if (!f) return false;
-    
+
     size_t written = fwrite(data, 1, size, f);
     fclose(f);
-    
+
+    return written == size;
+}
+
+/* MBC3 RTC sidecar — stored next to the .sav as a 48-byte .rtc file in
+ * the BGB-compatible layout documented in gbrt.c. */
+static bool sdl_load_rtc_state(GBContext* ctx, const char* rom_name, void* data, size_t size) {
+    (void)ctx;
+    char filename[512];
+    sdl_get_sidecar_path(filename, sizeof(filename), rom_name, ".rtc");
+
+    FILE* f = fopen(filename, "rb");
+    if (!f) return false;
+    size_t read = fread(data, 1, size, f);
+    fclose(f);
+    return read == size;
+}
+
+static bool sdl_save_rtc_state(GBContext* ctx, const char* rom_name, const void* data, size_t size) {
+    (void)ctx;
+    char filename[512];
+    sdl_get_sidecar_path(filename, sizeof(filename), rom_name, ".rtc");
+
+    FILE* f = fopen(filename, "wb");
+    if (!f) return false;
+    size_t written = fwrite(data, 1, size, f);
+    fclose(f);
     return written == size;
 }
 
@@ -1357,7 +1424,9 @@ void gb_platform_register_context(GBContext* ctx) {
     GBPlatformCallbacks callbacks = {
         .on_audio_sample = on_audio_sample,
         .load_battery_ram = sdl_load_battery_ram,
-        .save_battery_ram = sdl_save_battery_ram
+        .save_battery_ram = sdl_save_battery_ram,
+        .load_rtc_state = sdl_load_rtc_state,
+        .save_rtc_state = sdl_save_rtc_state,
     };
     gb_set_platform_callbacks(ctx, &callbacks);
 }
