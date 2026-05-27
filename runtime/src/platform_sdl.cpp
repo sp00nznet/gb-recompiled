@@ -638,6 +638,20 @@ bool gb_platform_poll_events(GBContext* ctx) {
             && event.window.windowID == SDL_GetWindowID(g_window))
             return false;
 
+        /* Disable vsync when the window loses focus so the game loop
+         * isn't gated on the compositor's throttled present interval —
+         * otherwise the audio thread's ring buffer empties faster than
+         * the game can refill it and you get stutter the moment you
+         * alt-tab. SDL 2.0.18+ exposes SDL_RenderSetVSync for this. */
+        if (event.type == SDL_WINDOWEVENT && g_renderer
+            && event.window.windowID == SDL_GetWindowID(g_window)) {
+            if (event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+                SDL_RenderSetVSync(g_renderer, 0);
+            } else if (event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+                SDL_RenderSetVSync(g_renderer, 1);
+            }
+        }
+
         /* Special keys — handled as events so they trigger once */
         if (event.type == SDL_KEYDOWN) {
             if (event.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
