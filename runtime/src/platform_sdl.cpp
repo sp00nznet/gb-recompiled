@@ -44,9 +44,18 @@ static const uint32_t g_palettes[][4] = {
     { 0xFFFFB000, 0xFFCB4F0E, 0xFF800000, 0xFF330000 }  // Amber
 };
 
-/* Joypad state - exported for gbrt.c to access */
+/* Joypad state - exported for gbrt.c to access.
+ *
+ * These must have C linkage: platform_sdl.h declares them inside
+ * `extern "C" {}` (so C consumers like gbrt.c get the unmangled name)
+ * and mp_session.cpp includes that header. Without `extern "C"` on the
+ * definitions here, MSVC C++-mangles them and the link fails with
+ * "unresolved external symbol g_joypad_buttons".  MinGW + MSVC differ
+ * in how forgiving they are about this. */
+extern "C" {
 uint8_t g_joypad_buttons = 0xFF;  /* Active low: Start, Select, B, A */
 uint8_t g_joypad_dpad = 0xFF;     /* Active low: Down, Up, Left, Right */
+}
 
 /* Stored context for menu access */
 static GBContext* g_ctx = NULL;

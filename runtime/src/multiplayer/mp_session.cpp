@@ -17,6 +17,11 @@
 extern "C" {
 #include "gbrt.h"
 #include "ppu.h"
+
+/* Joypad state lives in platform_sdl.cpp with C linkage. Declare here
+ * at file scope (MSVC rejects function-local `extern "C"`). */
+extern uint8_t g_joypad_buttons;
+extern uint8_t g_joypad_dpad;
 }
 
 /* ============================================================================
@@ -771,9 +776,8 @@ void mp_session_update(void) {
             MPPlayer* p = &g_session.players[i];
             if (!p->active || !p->ctx) continue;
 
-            /* Apply client input to their joypad */
-            extern uint8_t g_joypad_buttons;
-            extern uint8_t g_joypad_dpad;
+            /* Apply client input to their joypad — declared with C
+             * linkage at file scope above. */
 
             /* Temporarily swap joypad state to run this player's frame */
             uint8_t saved_dpad = g_joypad_dpad;
@@ -877,8 +881,6 @@ void mp_session_update(void) {
     } else {
         /* ---- CLIENT: Send input to host ---- */
         if (g_session.state == MP_STATE_CONNECTED) {
-            extern uint8_t g_joypad_buttons;
-            extern uint8_t g_joypad_dpad;
 
             MPInputPacket input;
             memset(&input, 0, sizeof(input));
