@@ -12,6 +12,7 @@
 #ifdef LA_HAS_MULTIPLAYER
 #include "multiplayer/mp_session.h"
 #include "multiplayer/mp_indicators.h"
+#include "multiplayer/mp_gen2_serial.h"
 #endif
 
 #ifdef GB_HAS_SDL2
@@ -393,6 +394,7 @@ static int g_frame_count = 0;
 
 void gb_platform_shutdown(void) {
 #ifdef LA_HAS_MULTIPLAYER
+    mp_gen2_shutdown();
     mp_session_shutdown();
 #endif
 
@@ -493,6 +495,9 @@ bool gb_platform_init(int scale) {
         fprintf(stderr, "[SDL] SDL_Init failed: %s\n", SDL_GetError());
         return false;
     }
+#ifdef LA_HAS_MULTIPLAYER
+    mp_gen2_init();   /* idempotent; safe even if user never opens Cable Club */
+#endif
     fprintf(stderr, "[SDL] SDL initialized.\n");
     
     /* Initialize Audio */
@@ -870,7 +875,14 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
                   g_texture == NULL, g_renderer == NULL, framebuffer == NULL);
         return;
     }
-    
+
+#ifdef LA_HAS_MULTIPLAYER
+    /* Pump the Gen 2 link-cable ENet host once per frame so connect /
+     * disconnect events are processed even when the game isn't actively
+     * exchanging serial bytes. */
+    mp_gen2_pump();
+#endif
+
     g_frame_count++;
     
     /* Handle Screenshot Dumping */
@@ -1456,6 +1468,9 @@ void gb_platform_register_context(GBContext* ctx) {
         .save_battery_ram = sdl_save_battery_ram,
         .load_rtc_state = sdl_load_rtc_state,
         .save_rtc_state = sdl_save_rtc_state,
+#ifdef LA_HAS_MULTIPLAYER
+        .serial_exchange = mp_gen2_serial_exchange,
+#endif
     };
     gb_set_platform_callbacks(ctx, &callbacks);
 }

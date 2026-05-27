@@ -79,7 +79,25 @@ typedef struct {
      * Platforms typically persist these next to the .sav (e.g. .rtc). */
     bool (*load_rtc_state)(GBContext* ctx, const char* rom_name, void* data, size_t size);
     bool (*save_rtc_state)(GBContext* ctx, const char* rom_name, const void* data, size_t size);
+
+    /* Game Boy serial-port byte exchange. Called when the cart writes SC
+     * ($FF02) with bit 7 set (transfer start). The platform layer is
+     * responsible for routing `out_byte` to whatever is on the other end
+     * of the (real or virtual) link cable and returning the byte that
+     * end shifted back. `mode` tells the platform whether this side is
+     * driving the clock (master, SC bit 1 = 1) or expecting the partner
+     * to drive it (slave, SC bit 1 = 0). Return 0xFF on no-partner /
+     * timeout — matches a disconnected cable.
+     *
+     * If this callback is unset, the runtime treats it as "no partner"
+     * and returns 0xFF immediately, preserving solo behaviour. */
+    uint8_t (*serial_exchange)(GBContext* ctx, uint8_t out_byte,
+                               uint8_t mode, uint32_t timeout_ms);
 } GBPlatformCallbacks;
+
+/* Values for serial_exchange's `mode` argument. */
+#define GB_SERIAL_SLAVE  0  /* Partner drives the clock */
+#define GB_SERIAL_MASTER 1  /* We drive the clock */
 
 /**
  * @brief CPU register and state context

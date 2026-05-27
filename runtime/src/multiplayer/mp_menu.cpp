@@ -10,6 +10,7 @@
 #include "mp_voice.h"
 #include "mp_pvp.h"
 #include "mp_indicators.h"
+#include "mp_gen2_serial.h"
 
 #include "imgui.h"
 #include <SDL.h>
@@ -809,6 +810,38 @@ void mp_menu_init(void) {
 void mp_menu_draw_menu_item(GBContext* ctx) {
     /* This is called inside BeginMainMenuBar */
     if (ImGui::BeginMenu("Multiplayer")) {
+        /* ---------------- Gen 2 link-cable (Cable Club) -------------- */
+        if (ImGui::BeginMenu("Cable Club (Gen 2 link-cable)")) {
+            MPGen2State cc_state = mp_gen2_get_state();
+            ImGui::TextDisabled("%s", mp_gen2_state_string());
+            ImGui::Separator();
+
+            static int cc_port = 21385;
+            static char cc_connect_host[128] = "127.0.0.1";
+            static int cc_connect_port = 21385;
+
+            if (cc_state == MP_GEN2_IDLE || cc_state == MP_GEN2_DISCONNECTED) {
+                ImGui::InputInt("Listen port", &cc_port, 0, 0);
+                if (cc_port < 1 || cc_port > 65535) cc_port = 21385;
+                if (ImGui::MenuItem("Host (wait for partner)")) {
+                    mp_gen2_host((uint16_t)cc_port);
+                }
+                ImGui::Separator();
+                ImGui::InputText("Host IP", cc_connect_host, sizeof(cc_connect_host));
+                ImGui::InputInt("Host port", &cc_connect_port, 0, 0);
+                if (cc_connect_port < 1 || cc_connect_port > 65535) cc_connect_port = 21385;
+                if (ImGui::MenuItem("Connect to partner")) {
+                    mp_gen2_connect(cc_connect_host, (uint16_t)cc_connect_port);
+                }
+            } else {
+                if (ImGui::MenuItem("Disconnect (unplug cable)")) {
+                    mp_gen2_disconnect();
+                }
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::Separator();
+        /* ---------------- la-mp world-sync overlay ------------------- */
         MPSessionState state = mp_session_get_state();
 
         if (state == MP_STATE_IDLE) {

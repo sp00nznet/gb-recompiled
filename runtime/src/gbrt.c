@@ -896,8 +896,21 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
              return;
         }
         if (addr == 0xFF02 && (value & 0x80)) {
-            printf("%c", ctx->io[0x01]); fflush(stdout);
-            ctx->io[0x0F] |= 0x08;
+            /* Serial transfer start. Route the SB byte to the platform
+             * layer (which may bridge to a network peer for link-cable
+             * multiplayer); receive the partner's byte back; raise the
+             * serial interrupt. Without a registered callback the runtime
+             * behaves like a disconnected cable (returns 0xFF). */
+            uint8_t out_byte = ctx->io[0x01];
+            uint8_t mode = (value & 0x02) ? GB_SERIAL_MASTER : GB_SERIAL_SLAVE;
+            uint8_t in_byte = 0xFF;
+            if (ctx->callbacks.serial_exchange) {
+                in_byte = ctx->callbacks.serial_exchange(ctx, out_byte, mode, 2000);
+            }
+            ctx->io[0x01] = in_byte;          /* SB <- partner's byte */
+            ctx->io[0x02] = value & ~0x80;    /* clear start bit */
+            ctx->io[0x0F] |= 0x08;            /* IF bit 3 (serial IRQ) */
+            return;
         }
         ctx->io[addr - 0xFF00] = value;
         return;
