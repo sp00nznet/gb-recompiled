@@ -1550,6 +1550,16 @@ GeneratedOutput generate_output(const ir::Program& program_in,
     source_ss << "#include \"gbrt.h\"\n";
     source_ss << "#include <stdio.h>\n";
     source_ss << "#include <stdlib.h>\n\n";
+
+    // GCC/Clang-isms used in the emitted code that need a portable
+    // shim under MSVC. Without this, MSVC mis-parses
+    // `__attribute__((noinline))` on the dispatch chunk helpers and
+    // every reference to `ctx` inside those functions cascades into
+    // "undeclared identifier" errors.
+    source_ss << "/* MSVC compatibility shim — __attribute__ is GCC/Clang. */\n";
+    source_ss << "#if defined(_MSC_VER) && !defined(__clang__) && !defined(__GNUC__)\n";
+    source_ss << "#  define __attribute__(x)\n";
+    source_ss << "#endif\n\n";
     
     // Forward declarations
     source_ss << "/* Forward declarations */\n";
