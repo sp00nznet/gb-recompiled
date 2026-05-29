@@ -81,6 +81,11 @@ static SDL_Window* g_window = NULL;
 static SDL_Renderer* g_renderer = NULL;
 static SDL_Texture* g_texture = NULL;
 static int g_scale = 3;
+/* Height (in window pixels) reserved at the top for the ImGui main menu bar,
+ * so the game is drawn in a strip *below* the bar instead of being stretched
+ * under it. 0 on builds without the ImGui menu (the game then fills the
+ * window as before). Set once the ImGui style/font is known. */
+static int g_menu_h = 0;
 static uint32_t g_last_frame_time = 0;
 static SDL_AudioDeviceID g_audio_device = 0;
 static bool g_vsync = true;
@@ -604,13 +609,29 @@ bool gb_platform_init(int scale) {
     /* Use saved scale if available, otherwise keep the default */
     g_scale = menu_gui_get_scale();
 
+#ifdef LA_HAS_IMGUI
+    /* Reserve a strip for the main menu bar so it sits above the game rather
+     * than overlapping the top of it. Measure the bar's exact height
+     * (GetFrameHeight == font size + 2× frame padding) by running one
+     * throwaway ImGui frame — GetFrameHeight needs a live frame, and this
+     * also forces the font atlas to build. */
+    ImGui_ImplSDLRenderer2_NewFrame();
+    ImGui_ImplSDL2_NewFrame();
+    ImGui::NewFrame();
+    g_menu_h = (int)ImGui::GetFrameHeight();
+    ImGui::EndFrame();
+    if (g_menu_h < 0) g_menu_h = 0;
+#endif
+
     // Initialize asset viewer (needs renderer for texture creation)
     asset_viewer_init(g_renderer);
 
 #if !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
     /* Apply saved window scale (desktop only — Android is fullscreen, and
-     * the wasm canvas size is fixed at creation + styled by the HTML shell) */
-    SDL_SetWindowSize(g_window, GB_SCREEN_WIDTH * g_scale, GB_SCREEN_HEIGHT * g_scale);
+     * the wasm canvas size is fixed at creation + styled by the HTML shell).
+     * The window is grown by g_menu_h so the game keeps its full size under
+     * the menu bar. */
+    SDL_SetWindowSize(g_window, GB_SCREEN_WIDTH * g_scale, GB_SCREEN_HEIGHT * g_scale + g_menu_h);
     SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
 #endif
 
@@ -989,9 +1010,12 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
     }
 #endif
 
-    /* Android: present the GB image letterboxed (preserve 10:9 aspect);
-     * on every other platform NULL stretches to the whole renderer. */
+    /* Android: present the GB image letterboxed (preserve 10:9 aspect).
+     * Desktop with a reserved menu strip (g_menu_h > 0): present the game in
+     * the region *below* the bar. Otherwise NULL stretches to the whole
+     * renderer. */
     SDL_Rect android_dst;
+    SDL_Rect menu_dst;
     SDL_Rect* present_dst = NULL;
 #ifdef __ANDROID__
     {
@@ -1008,6 +1032,16 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         android_dst.x = (ow - android_dst.w) / 2;
         android_dst.y = (oh - android_dst.h) / 2;
         present_dst = &android_dst;
+    }
+#else
+    if (g_menu_h > 0) {
+        int ow = 0, oh = 0;
+        SDL_GetRendererOutputSize(g_renderer, &ow, &oh);
+        menu_dst.x = 0;
+        menu_dst.y = g_menu_h;
+        menu_dst.w = ow;
+        menu_dst.h = oh - g_menu_h;
+        present_dst = &menu_dst;
     }
 #endif
 
@@ -1083,7 +1117,7 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
     if (new_scale != g_scale) {
         g_scale = new_scale;
 #ifndef __ANDROID__
-        SDL_SetWindowSize(g_window, GB_SCREEN_WIDTH * g_scale, GB_SCREEN_HEIGHT * g_scale);
+        SDL_SetWindowSize(g_window, GB_SCREEN_WIDTH * g_scale, GB_SCREEN_HEIGHT * g_scale + g_menu_h);
         SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
 #endif
     }
