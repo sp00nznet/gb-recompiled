@@ -896,21 +896,37 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
              return;
         }
         if (addr == 0xFF02 && (value & 0x80)) {
-            /* Serial transfer start. Route the SB byte to the platform
-             * layer (which may bridge to a network peer for link-cable
-             * multiplayer); receive the partner's byte back; raise the
-             * serial interrupt. Without a registered callback the runtime
-             * behaves like a disconnected cable (returns 0xFF). */
+            /* Serial transfer start. If a peer callback is registered (e.g.
+             * the link-cable multiplayer bridge), route the SB byte to it,
+             * take the partner's byte back, complete the transfer, and raise
+             * the serial interrupt. */
             uint8_t out_byte = ctx->io[0x01];
             uint8_t mode = (value & 0x02) ? GB_SERIAL_MASTER : GB_SERIAL_SLAVE;
-            uint8_t in_byte = 0xFF;
             if (ctx->callbacks.serial_exchange) {
-                in_byte = ctx->callbacks.serial_exchange(ctx, out_byte, mode, 2000);
+                uint8_t in_byte = ctx->callbacks.serial_exchange(ctx, out_byte, mode, 2000);
+                ctx->io[0x01] = in_byte;          /* SB <- partner's byte */
+                ctx->io[0x02] = value & ~0x80;    /* clear start bit */
+                ctx->io[0x0F] |= 0x08;            /* IF bit 3 (serial IRQ) */
+                return;
             }
-            ctx->io[0x01] = in_byte;          /* SB <- partner's byte */
-            ctx->io[0x02] = value & ~0x80;    /* clear start bit */
-            ctx->io[0x0F] |= 0x08;            /* IF bit 3 (serial IRQ) */
-            return;
+            /* No peer registered: behave like a disconnected link cable.
+             * Only an internal-clock (master) transfer completes — it clocks
+             * in 0xFF from the floating data line and raises the serial IRQ.
+             * An external-clock (slave, SC bit0=0) transfer must be left
+             * PENDING: with no peer to supply the clock it never completes on
+             * real hardware. Auto-completing it (as the bare callback-less
+             * path used to) floods the game with spurious serial interrupts —
+             * which both made the Oracle games mistake the open bus for a
+             * link partner at boot AND drove their stack into VRAM, crashing
+             * them. Leaving slave transfers pending fixes both. */
+            if (value & 0x01) {                  /* SC bit0 = internal clock */
+                ctx->io[0x01] = 0xFF;            /* open-bus byte shifted in */
+                ctx->io[0x02] = value & ~0x80;   /* transfer done: clear start */
+                ctx->io[0x0F] |= 0x08;           /* IF bit 3 (serial IRQ) */
+                return;
+            }
+            /* external clock, no peer: store SC with start bit still set so
+             * the transfer pends, then return without raising the IRQ. */
         }
         ctx->io[addr - 0xFF00] = value;
         return;
