@@ -4,6 +4,7 @@
  */
 
 #include "recompiler/ir/ir_builder.h"
+#include "recompiler/custom_names.h"
 #include <sstream>
 #include <iomanip>
 
@@ -308,6 +309,12 @@ std::string Program::make_address_label(uint8_t bank, uint16_t addr) const {
 }
 
 std::string Program::make_function_name(uint8_t bank, uint16_t addr) const {
+    // Ghidra-derived name (from --names), if any. lookup_custom_name returns
+    // nullptr for reserved vectors, so this stays consistent with the
+    // analyzer's generate_function_name (which handles those before this).
+    if (const std::string* cn = lookup_custom_name(bank, addr)) {
+        return *cn;
+    }
     std::ostringstream ss;
     ss << "func_";
     if (bank > 0) {

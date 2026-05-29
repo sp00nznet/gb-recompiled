@@ -4,6 +4,7 @@
  */
 
 #include "recompiler/analyzer.h"
+#include "recompiler/custom_names.h"
 #include <algorithm>
 #include <queue>
 #include <iostream>
@@ -1137,7 +1138,13 @@ std::string generate_function_name(uint8_t bank, uint16_t address) {
             case 0x0100: return "gb_main";  // Avoid shadowing C main()
         }
     }
-    
+
+    // Ghidra-derived name (from --names), if any. Reserved vectors above are
+    // handled before this and never overridden.
+    if (const std::string* cn = lookup_custom_name(bank, address)) {
+        return *cn;
+    }
+
     ss << "func_";
     if (bank > 0) {
         ss << std::hex << std::setfill('0') << std::setw(2) << (int)bank << "_";

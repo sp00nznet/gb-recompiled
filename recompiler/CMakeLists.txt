@@ -5,6 +5,7 @@ add_executable(gbrecomp
     src/rom.cpp
     src/decoder.cpp
     src/analyzer.cpp
+    src/custom_names.cpp
     src/bank_tracker.cpp
     src/symbol_table.cpp
     src/generator.cpp

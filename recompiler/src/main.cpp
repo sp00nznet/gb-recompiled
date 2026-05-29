@@ -9,6 +9,7 @@
 #include "recompiler/ir/ir.h"
 #include "recompiler/ir/ir_builder.h"
 #include "recompiler/codegen/c_emitter.h"
+#include "recompiler/custom_names.h"
 
 #include <iostream>
 #include <string>
@@ -48,6 +49,7 @@ void print_usage(const char* program) {
     std::cout << "  --add-entry-point b:a Add manual entry point (e.g. 1:4000)\n";
     std::cout << "  --no-scan             Disable aggressive code scanning (enabled by default)\n";
     std::cout << "  --use-trace <file>    Use runtime trace to find entry points\n";
+    std::cout << "  --names <file>        Use Ghidra-derived function names (tools/ghidra/build_names.py)\n";
     std::cout << "  -h, --help            Show this help\n";
 }
 
@@ -85,6 +87,7 @@ int main(int argc, char* argv[]) {
     int specific_bank = -1;
     std::vector<uint32_t> manual_entry_points;
     std::string trace_file_path;
+    std::string names_file_path;
     
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -139,6 +142,10 @@ int main(int argc, char* argv[]) {
             if (i + 1 < argc) {
                 trace_file_path = argv[++i];
             }
+        } else if (arg == "--names") {
+            if (i + 1 < argc) {
+                names_file_path = argv[++i];
+            }
         } else if (arg[0] != '-') {
             rom_path = arg;
         } else {
@@ -151,6 +158,12 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error: No ROM file specified\n";
         print_usage(argv[0]);
         return 1;
+    }
+
+    // Load Ghidra-derived names (if given) before analysis, so both the
+    // analyzer's function naming and Program::make_function_name see them.
+    if (!names_file_path.empty()) {
+        gbrecomp::load_custom_names(names_file_path);
     }
     
     print_banner();
