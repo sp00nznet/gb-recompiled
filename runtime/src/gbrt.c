@@ -61,8 +61,13 @@ GBContext* gb_context_create(const GBConfig* config) {
     }
     
     ctx->apu = gb_audio_create();
+
+    /* Honor the requested hardware model. No config (NULL) => CGB, which
+     * preserves the legacy behavior every existing caller relied on. A DMG
+     * cart (e.g. Pokemon Red/Blue) must boot with A=0x01 and DMG PPU mode. */
+    ctx->model = config ? config->model : GB_MODEL_CGB;
+
     gb_context_reset(ctx, true);
-    (void)config;
 
     if (gbrt_trace_filename) {
         ctx->trace_file = fopen(gbrt_trace_filename, "w");
@@ -142,13 +147,22 @@ void gb_context_reset(GBContext* ctx, bool skip_bootrom) {
     ctx->rom_bank_upper = 0;
     
     if (skip_bootrom) {
+        bool dmg = (ctx->model == GB_MODEL_DMG);
         ctx->pc = 0x0100;
         ctx->sp = 0xFFFE;
-        ctx->af = 0x1180;  /* A=0x11 for CGB mode, F=0x80 (Z flag only, N/H/C clear) */
+        /* A register at $0100 is the model signature the game reads to detect
+         * its host: 0x01 on DMG, 0x11 on CGB. F=0x80 (Z set, N/H/C clear). */
+        ctx->af = dmg ? 0x01B0 : 0x1180;
         ctx->bc = 0x0000;
         ctx->de = 0xFF56;
         ctx->hl = 0x000D;
         gb_unpack_flags(ctx);
+
+        /* PPU rendering path follows the model: DMG uses the BGP/OBP palette
+         * registers and honors LCDC bit 0 (BG enable); CGB ignores both. */
+        if (ctx->ppu) {
+            ((GBPPU*)ctx->ppu)->cgb_mode = !dmg;
+        }
         ctx->rom_bank = 1;
         ctx->wram_bank = 1;
 

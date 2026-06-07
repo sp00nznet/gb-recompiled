@@ -245,6 +245,11 @@ typedef struct GBContext {
     /* Trace context */
     void* trace_file;     /**< FILE* for trace output */
     bool trace_entries_enabled;
+
+    /* Hardware model (DMG/CGB/SGB). Selected from GBConfig at create time;
+     * defaults to CGB when no config is supplied (preserves legacy behavior).
+     * Drives post-bootrom A register, palette defaults, and PPU cgb_mode. */
+    GBModel model;
 } GBContext;
 
 /* ============================================================================
