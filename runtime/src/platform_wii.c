@@ -134,7 +134,7 @@ static void xb_on_audio_sample(GBContext* ctx, int16_t left, int16_t right)
 
 /* --- Battery RAM — sd:/linksawakening/<rom>.sav ------------------------ */
 
-#define SAVE_DIR "sd:/linksawakening"
+#define SAVE_DIR "sd:/" GBRT_SAVE_NAME
 
 static void save_path(char* out, size_t n, const char* rom, const char* suffix)
 {
