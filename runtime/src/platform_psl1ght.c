@@ -227,7 +227,11 @@ static void xb_on_audio_sample(GBContext* ctx, int16_t left, int16_t right)
 
 /* --- Battery RAM — /dev_hdd0/game/LADX00001/USRDIR/ -------------------- */
 
-#define SAVE_DIR "/dev_hdd0/game/LADX00001/USRDIR"
+/* Must match the TITLE_ID the project packages its PKG with. */
+#ifndef GBRT_PS3_TITLE_ID
+#define GBRT_PS3_TITLE_ID "GBRC00001"
+#endif
+#define SAVE_DIR "/dev_hdd0/game/" GBRT_PS3_TITLE_ID "/USRDIR"
 
 static void save_path(char* out, size_t n, const char* rom, const char* suffix)
 {

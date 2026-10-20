@@ -103,7 +103,7 @@ static void xb_on_audio_sample(GBContext* ctx, int16_t left, int16_t right)
  * If uda: isn't mounted, fall back to CWD which on libxenon is usually
  * dvd:/ for disc boot or hdd:/ otherwise. */
 
-#define SAVE_DIR_USB   "uda:/linksawakening"
+#define SAVE_DIR_USB   "uda:/" GBRT_SAVE_NAME
 #define SAVE_DIR_FALLBACK "."
 
 static void make_save_path(char* out, size_t out_sz, const char* rom_name, const char* suffix)

@@ -9,6 +9,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* Folder name the console backends save under (e.g. sd:/<name>/ on Wii).
+ * Set per project: -DGBRT_SAVE_NAME=\"mygame\". */
+#ifndef GBRT_SAVE_NAME
+#define GBRT_SAVE_NAME "gbrecomp"
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
