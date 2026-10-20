@@ -4,6 +4,7 @@
  */
 
 #include "platform_sdl.h"
+#include <string.h>  /* strlen/memcpy in gb_platform_set_save_dir */
 #include "gbrt.h"   /* For GBPlatformCallbacks */
 #include "ppu.h"
 #include "gbrt_debug.h"
@@ -710,6 +711,7 @@ bool gb_platform_poll_events(GBContext* ctx) {
          * otherwise the audio thread's ring buffer empties faster than
          * the game can refill it and you get stutter the moment you
          * alt-tab. SDL 2.0.18+ exposes SDL_RenderSetVSync for this. */
+#if SDL_VERSION_ATLEAST(2, 0, 18)
         if (event.type == SDL_WINDOWEVENT && g_renderer
             && event.window.windowID == SDL_GetWindowID(g_window)) {
             if (event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
@@ -718,6 +720,7 @@ bool gb_platform_poll_events(GBContext* ctx) {
                 SDL_RenderSetVSync(g_renderer, 1);
             }
         }
+#endif
 
         /* Special keys — handled as events so they trigger once */
         if (event.type == SDL_KEYDOWN) {
