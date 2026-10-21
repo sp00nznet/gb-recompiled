@@ -211,7 +211,7 @@ bool gb_platform_init(int scale)
     /* Clear VRAM and show the (single) framebuffer. */
     for (int i = 0; i < PSP_STRIDE * PSP_H; ++i) g_fb[i] = 0xFF000000u;
     sceDisplaySetFrameBuf((void*)VRAM_BASE_CACHED, PSP_STRIDE,
-                          PSP_DISPLAY_PIXELFORMAT_8888,
+                          PSP_DISPLAY_PIXEL_FORMAT_8888,
                           PSP_DISPLAY_SETBUF_NEXTFRAME);
 
     sceCtrlSetSamplingCycle(0);
@@ -281,7 +281,7 @@ void gb_platform_vsync(void)
 {
     sceDisplayWaitVblankStart();
     sceDisplaySetFrameBuf((void*)VRAM_BASE_CACHED, PSP_STRIDE,
-                          PSP_DISPLAY_PIXELFORMAT_8888,
+                          PSP_DISPLAY_PIXEL_FORMAT_8888,
                           PSP_DISPLAY_SETBUF_NEXTFRAME);
 }
 

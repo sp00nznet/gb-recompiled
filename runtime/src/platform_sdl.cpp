@@ -28,7 +28,11 @@
 #endif
 
 /* Cross-platform mkdir wrapper for the --save-dir override. */
-#ifdef _WIN32
+#if defined(NXDK)
+   /* Original Xbox: defines _WIN32 but has no _mkdir, and nothing there
+    * sets a save-dir override, so there is never a directory to create. */
+#  define gbrt_mkdir(p) ((void)(p))
+#elif defined(_WIN32)
 #  include <direct.h>
 #  define gbrt_mkdir(p) _mkdir(p)
 #else
