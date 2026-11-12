@@ -1,0 +1,10 @@
+Third-party components retain their own licenses:
+  - runtime/third_party/imgui — Dear ImGui, MIT (see its LICENSE.txt)
+  - runtime/third_party/enet  — ENet, MIT (see its LICENSE)
+  - runtime/third_party/mgbdis, and submodule dependencies, keep the
+    licenses of their respective upstream projects.
+
+This project distributes no game ROM and no recompiled game code.
+"Game Boy" is a trademark of Nintendo; this project is not affiliated
+with or endorsed by Nintendo. You must supply your own legally obtained
+ROM files.
